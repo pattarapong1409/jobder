@@ -8,6 +8,7 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/user');
 const companyRoutes = require('./routes/company');
 const adminRoutes = require('./routes/admin'); // 👈 1. เพิ่มบรรทัดนี้
+const superadminRoutes = require('./routes/superadmin'); 
 const paymentRoutes = require('./routes/payment');
 const forgotPasswordRoutes = require('./routes/forgot_password');
 
@@ -27,6 +28,7 @@ app.use(authRoutes); // เรียกใช้เส้นทาง Login/Regi
 app.use(userRoutes); // เรียกใช้เส้นทาง User
 app.use(companyRoutes);  // เรียกใช้เส้นทาง Job
 app.use(adminRoutes); //เรียกใช้เส้นทาง admin
+app.use(superadminRoutes); //เรียกใช้เส้นทาง superadmin
 
 app.use(paymentRoutes);
 app.use(forgotPasswordRoutes);
