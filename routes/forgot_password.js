@@ -3,9 +3,6 @@ const router = express.Router();
 const supabase = require("../db");
 const bcrypt = require('bcrypt'); 
 
-// 💡 ใช้สำหรับแปลง Body เป็น JSON ในกรณีที่ระบบเก่าไม่มี jsonEncode
-const jsonEncode = (data) => JSON.stringify(data);
-
 // ==========================================
 // 1. ฟังก์ชันส่ง OTP (ส่งหาอีเมลไหนก็ได้ผ่าน Brevo API)
 // ==========================================
@@ -56,17 +53,17 @@ router.post("/forgot-password/send-otp", async (req, res) => {
 
     if (insertError) throw insertError;
 
-    // 🚨 ท่อนส่งอีเมล: เปลี่ยนมายิงเข้า Web API ของ Brevo ทะลุกำแพง Render ได้ 100%
+    // 🚨 แก้ไขจุดนี้: เปลี่ยนจาก jsonEncode เป็น JSON.stringify ของ Node.js แท้ ๆ เพื่อให้ Brevo อ่าน API Key เจอ
     const responseBrevo = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: {
         "accept": "application/json",
-        "api-key": process.env.BREVO_API_KEY, // คีย์ที่ฝากไว้บน Render
+        "api-key": process.env.BREVO_API_KEY, 
         "content-type": "application/json"
       },
-      body: jsonEncode({
-        "sender": { "name": "Jobder", "email": "ptrp14097@gmail.com" }, // อีเมลผู้ส่ง (ใส่ Gmail คุณไว้ได้เลย)
-        "to": [{ "email": email }], // ส่งหาอีเมลปลายทางที่พิมพ์เข้ามาในแอป (เมลไหนก็ได้)
+      body: JSON.stringify({
+        "sender": { "name": "Jobder", "email": "ptrp14097@gmail.com" }, 
+        "to": [{ "email": email }], 
         "subject": "OTP รีเซ็ตรหัสผ่าน Jobder",
         "htmlContent": `
           <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px; max-width: 500px; margin: 0 auto;">
