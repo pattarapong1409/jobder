@@ -3,12 +3,12 @@ const router = express.Router();
 const supabase = require("../db");
 const bcrypt = require('bcrypt'); 
 
-// 🚨 1. เปลี่ยนมาเรียกใช้ Resend แทน Nodemailer ตัวเดิม
-const { Resend } = require('resend');
-// ระบบจะดึงคีย์ RESEND_API_KEY ที่เราตั้งไว้บน Render มาใช้เองอัตโนมัติ
-const resend = new Resend(process.env.RESEND_API_KEY); 
+// 💡 ใช้สำหรับแปลง Body เป็น JSON ในกรณีที่ระบบเก่าไม่มี jsonEncode
+const jsonEncode = (data) => JSON.stringify(data);
 
-// ฟังก์ชันส่ง OTP (แก้ไขเฉพาะท่อนส่งอีเมล)
+// ==========================================
+// 1. ฟังก์ชันส่ง OTP (ส่งหาอีเมลไหนก็ได้ผ่าน Brevo API)
+// ==========================================
 router.post("/forgot-password/send-otp", async (req, res) => {
   try {
     const { email } = req.body;
@@ -17,6 +17,7 @@ router.post("/forgot-password/send-otp", async (req, res) => {
       return res.status(400).json({ error: "กรุณากรอกอีเมล" });
     }
 
+    // เช็กว่ามีอีเมลนี้ในระบบไหม
     const { data: user, error: userError } = await supabase
       .from("users")
       .select("user_id,email")
@@ -29,8 +30,10 @@ router.post("/forgot-password/send-otp", async (req, res) => {
       return res.status(404).json({ error: "ไม่พบอีเมลนี้ในระบบ" });
     }
 
+    // สุ่ม OTP 6 หลัก
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
+    // อัปเดต OTP เก่าให้หมดอายุ
     await supabase
       .from("password_reset")
       .update({ is_used: true })
@@ -38,6 +41,7 @@ router.post("/forgot-password/send-otp", async (req, res) => {
 
     const expiresMs = Date.now() + 5 * 60 * 1000;
 
+    // บันทึก OTP ใหม่ลง Database
     const { error: insertError } = await supabase
       .from("password_reset")
       .insert([
@@ -52,30 +56,42 @@ router.post("/forgot-password/send-otp", async (req, res) => {
 
     if (insertError) throw insertError;
 
-    // 🚨 2. ท่อนส่งอีเมลเปลี่ยนมาใช้คำสั่งนี้แทน พอร์ตไม่โดนบล็อกแน่นอน 100%
-    const { data, error: sendError } = await resend.emails.send({
-      // ช่วงทดสอบระบบฟรี ต้องใช้เมลดิสนี้เท่านั้น: onboarding@resend.dev
-      from: 'Jobder <onboarding@resend.dev>', 
-      to: email, // อีเมลปลายทางของผู้ใช้ (เช่น ptrp14097@gmail.com)
-      subject: 'OTP รีเซ็ตรหัสผ่าน Jobder',
-      html: `
-        <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px; max-width: 500px; margin: 0 auto;">
-          <h2 style="color: #333;">รหัส OTP ของคุณ</h2>
-          <p style="font-size: 16px; color: #666;">กรุณานำรหัส OTP ด้านล่างนี้ไปกรอกในแอปพลิเคชันเพื่อรีเซ็ตรหัสผ่านครับ</p>
-          <div style="background-color: #fff0f0; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
-            <h1 style="color: #ff5252; letter-spacing: 6px; font-size: 36px; margin: 0;">${otp}</h1>
+    // 🚨 ท่อนส่งอีเมล: เปลี่ยนมายิงเข้า Web API ของ Brevo ทะลุกำแพง Render ได้ 100%
+    const responseBrevo = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "api-key": process.env.BREVO_API_KEY, // คีย์ที่ฝากไว้บน Render
+        "content-type": "application/json"
+      },
+      body: jsonEncode({
+        "sender": { "name": "Jobder", "email": "ptrp14097@gmail.com" }, // อีเมลผู้ส่ง (ใส่ Gmail คุณไว้ได้เลย)
+        "to": [{ "email": email }], // ส่งหาอีเมลปลายทางที่พิมพ์เข้ามาในแอป (เมลไหนก็ได้)
+        "subject": "OTP รีเซ็ตรหัสผ่าน Jobder",
+        "htmlContent": `
+          <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px; max-width: 500px; margin: 0 auto;">
+            <h2 style="color: #333;">รหัส OTP ของคุณ</h2>
+            <p style="font-size: 16px; color: #666;">กรุณานำรหัส OTP ด้านล่างนี้ไปกรอกในแอปพลิเคชันเพื่อรีเซ็ตรหัสผ่านครับ</p>
+            <div style="background-color: #fff0f0; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
+              <h1 style="color: #ff5252; letter-spacing: 6px; font-size: 36px; margin: 0;">${otp}</h1>
+            </div>
+            <p style="font-size: 13px; color: #999;">* รหัส OTP นี้มีอายุการใช้งาน 5 นาที</p>
+            <p style="font-size: 13px; color: #999;">หากคุณไม่ได้ขอบริการนี้ กรุณาปล่อยผ่านอีเมลฉบับนี้ไปได้เลยครับ</p>
           </div>
-          <p style="font-size: 13px; color: #999;">* รหัส OTP นี้มีอายุการใช้งาน 5 นาที</p>
-          <p style="font-size: 13px; color: #999;">หากคุณไม่ได้ขอบริการนี้ กรุณาปล่อยผ่านอีเมลฉบับนี้ไปได้เลยครับ</p>
-        </div>
-      `,
+        `
+      })
     });
 
-    if (sendError) throw sendError;
+    const resData = await responseBrevo.json();
 
-    console.log("Email sent via Resend Web API ID:", data.id);
+    // ดัก Error เผื่อฝั่ง Brevo แจ้งเตือนอะไรกลับมา
+    if (!responseBrevo.ok) {
+      throw new Error(resData.message || "Brevo API ส่งเมลไม่สำเร็จ");
+    }
 
-    // ส่งคำตอบกลับไปบอก Flutter ว่าสำเร็จแล้วจ้า!
+    console.log("Email sent successfully via Brevo Web API!");
+
+    // ส่งคำตอบกลับไปบอก Flutter ให้เปลี่ยนหน้า
     res.json({
       success: true,
       message: "ส่ง OTP ไปที่อีเมลแล้ว",
@@ -87,9 +103,9 @@ router.post("/forgot-password/send-otp", async (req, res) => {
   }
 });
 
-// ... ส่วนตรวจ OTP และเปลี่ยนรหัสผ่านด้านล่าง ให้คงโค้ดเดิมของคุณไว้ได้เลยครับ ไม่ต้องแก้ตาม ...
-// ตรวจ OTP
-// ตรวจ OTP
+// ==========================================
+// 2. ฟังก์ชันตรวจ OTP
+// ==========================================
 router.post("/forgot-password/verify-otp", async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -115,14 +131,14 @@ router.post("/forgot-password/verify-otp", async (req, res) => {
     }
 
     const nowMs = Date.now();
-const expiresMs = Number(data.expires_ms);
+    const expiresMs = Number(data.expires_ms);
 
-console.log("NOW MS:", nowMs);
-console.log("EXPIRES MS:", expiresMs);
+    console.log("NOW MS:", nowMs);
+    console.log("EXPIRES MS:", expiresMs);
 
-if (expiresMs < nowMs) {
-  return res.status(400).json({ error: "OTP หมดอายุแล้ว" });
-}
+    if (expiresMs < nowMs) {
+      return res.status(400).json({ error: "OTP หมดอายุแล้ว" });
+    }
 
     res.json({
       success: true,
@@ -134,7 +150,9 @@ if (expiresMs < nowMs) {
   }
 });
 
-// เปลี่ยนรหัสผ่าน
+// ==========================================
+// 3. ฟังก์ชันเปลี่ยนรหัสผ่านใหม่
+// ==========================================
 router.post("/forgot-password/reset-password", async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
@@ -160,26 +178,21 @@ router.post("/forgot-password/reset-password", async (req, res) => {
     }
 
     const nowMs = Date.now();
-const expiresMs = Number(data.expires_ms);
+    const expiresMs = Number(data.expires_ms);
 
-console.log("RESET NOW MS:", nowMs);
-console.log("RESET EXPIRES MS:", expiresMs);
+    console.log("RESET NOW MS:", nowMs);
+    console.log("RESET EXPIRES MS:", expiresMs);
 
-if (expiresMs < nowMs) {
-  return res.status(400).json({ error: "OTP หมดอายุแล้ว" });
-}
+    if (expiresMs < nowMs) {
+      return res.status(400).json({ error: "OTP หมดอายุแล้ว" });
+    }
 
-    const hashedPassword = await bcrypt.hash(
-  newPassword,
-  10
-);
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-const { error: updateError } = await supabase
-  .from("users")
-  .update({
-    password: hashedPassword
-  })
-  .eq("email", email);
+    const { error: updateError } = await supabase
+      .from("users")
+      .update({ password: hashedPassword })
+      .eq("email", email);
 
     if (updateError) throw updateError;
 
@@ -197,4 +210,5 @@ const { error: updateError } = await supabase
     res.status(500).json({ error: err.message });
   }
 });
+
 module.exports = router;
