@@ -1,28 +1,14 @@
 const express = require("express");
 const router = express.Router();
-const nodemailer = require("nodemailer");
 const supabase = require("../db");
-const bcrypt = require('bcrypt'); // 🌟 เพิ่มบรรทัดนี้เข้าไปด้านบนสุดของไฟล์
+const bcrypt = require('bcrypt'); 
 
-//  แก้ไขใหม่เป็นแบบนี้ครับ (เพิ่มการระบุ IPv4 และตั้งค่าหมดเวลา)
-const transporter = nodemailer.createTransport({
-  host: "74.125.130.108", // 👈 นี่คือเลขไอพี IPv4 ตรง ๆ ของ smtp.gmail.com
-  port: 587,
-  secure: false, 
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD,
-  },
-  connectionTimeout: 15000,
-  greetingTimeout: 15000,
-  dnsTimeout: 15000,
-  tls: {
-    // ใส่เพิ่มเพื่อให้ Nodemailer ยอมรับใบรับรองความปลอดภัยของไอพีตรงนี้
-    rejectUnauthorized: false 
-  }
-});
+// 🚨 1. เปลี่ยนมาเรียกใช้ Resend แทน Nodemailer ตัวเดิม
+const { Resend } = require('resend');
+// ระบบจะดึงคีย์ RESEND_API_KEY ที่เราตั้งไว้บน Render มาใช้เองอัตโนมัติ
+const resend = new Resend(process.env.RESEND_API_KEY); 
 
-// ส่ง OTP
+// ฟังก์ชันส่ง OTP (แก้ไขเฉพาะท่อนส่งอีเมล)
 router.post("/forgot-password/send-otp", async (req, res) => {
   try {
     const { email } = req.body;
@@ -52,46 +38,56 @@ router.post("/forgot-password/send-otp", async (req, res) => {
 
     const expiresMs = Date.now() + 5 * 60 * 1000;
 
-const { error: insertError } = await supabase
-  .from("password_reset")
-  .insert([
-    {
-      email,
-      otp_code: otp,
-      expires_at: new Date(expiresMs).toISOString(),
-      expires_ms: expiresMs,
-      is_used: false,
-    },
-  ]);
+    const { error: insertError } = await supabase
+      .from("password_reset")
+      .insert([
+        {
+          email,
+          otp_code: otp,
+          expires_at: new Date(expiresMs).toISOString(),
+          expires_ms: expiresMs,
+          is_used: false,
+        },
+      ]);
 
     if (insertError) throw insertError;
 
-    const info = await transporter.sendMail({
-      from: `"Jobder" <${process.env.GMAIL_USER}>`,
-      to: email,
-      subject: "OTP รีเซ็ตรหัสผ่าน Jobder",
+    // 🚨 2. ท่อนส่งอีเมลเปลี่ยนมาใช้คำสั่งนี้แทน พอร์ตไม่โดนบล็อกแน่นอน 100%
+    const { data, error: sendError } = await resend.emails.send({
+      // ช่วงทดสอบระบบฟรี ต้องใช้เมลดิสนี้เท่านั้น: onboarding@resend.dev
+      from: 'Jobder <onboarding@resend.dev>', 
+      to: email, // อีเมลปลายทางของผู้ใช้ (เช่น ptrp14097@gmail.com)
+      subject: 'OTP รีเซ็ตรหัสผ่าน Jobder',
       html: `
-        <div style="font-family: Arial, sans-serif; padding: 20px;">
-          <h2>รหัส OTP ของคุณ</h2>
-          <h1 style="color: #ff5252; letter-spacing: 4px;">${otp}</h1>
-          <p>OTP นี้มีอายุ 5 นาที</p>
-          <p>หากคุณไม่ได้ขอรีเซ็ตรหัสผ่าน กรุณาไม่ต้องสนใจอีเมลนี้</p>
+        <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px; max-width: 500px; margin: 0 auto;">
+          <h2 style="color: #333;">รหัส OTP ของคุณ</h2>
+          <p style="font-size: 16px; color: #666;">กรุณานำรหัส OTP ด้านล่างนี้ไปกรอกในแอปพลิเคชันเพื่อรีเซ็ตรหัสผ่านครับ</p>
+          <div style="background-color: #fff0f0; padding: 15px; text-align: center; border-radius: 8px; margin: 20px 0;">
+            <h1 style="color: #ff5252; letter-spacing: 6px; font-size: 36px; margin: 0;">${otp}</h1>
+          </div>
+          <p style="font-size: 13px; color: #999;">* รหัส OTP นี้มีอายุการใช้งาน 5 นาที</p>
+          <p style="font-size: 13px; color: #999;">หากคุณไม่ได้ขอบริการนี้ กรุณาปล่อยผ่านอีเมลฉบับนี้ไปได้เลยครับ</p>
         </div>
       `,
     });
 
-    console.log("Gmail sent:", info.messageId);
+    if (sendError) throw sendError;
 
+    console.log("Email sent via Resend Web API ID:", data.id);
+
+    // ส่งคำตอบกลับไปบอก Flutter ว่าสำเร็จแล้วจ้า!
     res.json({
       success: true,
       message: "ส่ง OTP ไปที่อีเมลแล้ว",
     });
+
   } catch (err) {
     console.error("Send OTP Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
+// ... ส่วนตรวจ OTP และเปลี่ยนรหัสผ่านด้านล่าง ให้คงโค้ดเดิมของคุณไว้ได้เลยครับ ไม่ต้องแก้ตาม ...
 // ตรวจ OTP
 // ตรวจ OTP
 router.post("/forgot-password/verify-otp", async (req, res) => {
