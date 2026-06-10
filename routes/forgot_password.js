@@ -54,11 +54,12 @@ router.post("/forgot-password/send-otp", async (req, res) => {
     if (insertError) throw insertError;
 
     // 🚨 แก้ไขจุดนี้: เปลี่ยนจาก jsonEncode เป็น JSON.stringify ของ Node.js แท้ ๆ เพื่อให้ Brevo อ่าน API Key เจอ
+    // 🚨 ปรับปรุงตรงส่วนนี้:
     const responseBrevo = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: {
         "accept": "application/json",
-        "api-key": process.env.BREVO_API_KEY, 
+        "api-key": String(process.env.BREVO_API_KEY).trim(), // 👈 1. ครอบด้วย String().trim() เพื่อป้องกันกรณีมีช่องว่าง (Space) หลุดไปในคีย์
         "content-type": "application/json"
       },
       body: JSON.stringify({
