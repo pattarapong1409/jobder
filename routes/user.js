@@ -146,10 +146,10 @@ router.get('/searchjobs', async (req, res) => {
 // 👤 PART 2: USER & MEMBER POSTS
 // =====================================================
 
-// ฟังก์ชันทำ keyword แบบง่าย
 function normalizeText(text) {
   return (text || '').toString().trim().toLowerCase();
 }
+
 router.post('/memberpost', async (req, res) => {
   const { member_id, title, description, salary, location } = req.body;
 
@@ -389,6 +389,7 @@ router.put('/post/:id', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 // Member สมัครงาน
 router.post('/api/apply-job', async (req, res) => {
   try {
@@ -561,16 +562,29 @@ router.get('/api/application/:id', async (req, res) => {
     res.status(500).json({ error: 'ดึงข้อมูลไม่สำเร็จ: ' + err.message });
   }
 });
-// 🔔 ดึงแจ้งเตือนฝั่งพนักงาน
+
+// 🔔 ดึงแจ้งเตือนฝั่งพนักงาน (แก้ไขเพื่อดึงค่า interest เรียบร้อยแล้ว 🛠️)
 router.get('/notifications/member/:memberId', async (req, res) => {
   const { memberId } = req.params;
 
   try {
     const { data, error } = await supabase
       .from('notification')
-      .select('*')
+      .select(`
+        *,
+        jobpost:job_id (
+          job_id,
+          title,
+          company_id,
+          company:company_id (
+            company_id,
+            namecompany,
+            company_logo
+          )
+        )
+      `)
       .eq('member_id', memberId)
-      .in('noti_type', ['job_match', 'application'])
+      .in('noti_type', ['job_match', 'application', 'interest']) // 👈 เพิ่ม 'interest' เข้ามาระบบเพื่อไม่ให้โดนกรองทิ้ง!
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -688,6 +702,67 @@ router.put('/api/notifications/member/read/:id', async (req, res) => {
   } catch (err) {
     console.error('❌ Member Read Notification Error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ============================================================================
+// ❤️ API สำหรับกด "สนใจงาน" (เด้งแจ้งเตือนทั้งบริษัท และ ตัวผู้ใช้เอง)
+// ============================================================================
+router.post('/api/jobs/interest', async (req, res) => {
+  const { member_id, job_id, company_id, title } = req.body;
+
+  if (!member_id || !job_id || !company_id) {
+    return res.status(400).json({ error: 'ข้อมูลไม่ครบถ้วน' });
+  }
+
+  try {
+    // ตรวจสอบความซ้ำซ้อน
+    const { data: existingNoti } = await supabase
+      .from('notification')
+      .select('noti_id')
+      .eq('member_id', member_id)
+      .eq('job_id', job_id)
+      .eq('noti_type', 'interest')
+      .maybeSingle();
+
+    if (existingNoti) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'คุณได้ส่งความสนใจให้งานนี้ไปเรียบร้อยแล้ว' 
+      });
+    }
+
+    // ข้อความกลางที่จะแสดงในระบบแจ้งเตือน
+    const notiMessage = `คุณสนใจตำแหน่งงาน "${title || 'ประกาศงาน'}" เรียบร้อยแล้ว (ระบบส่งข้อมูลแจ้งไปยังบริษัทแล้ว)`;
+    
+    const { data, error } = await supabase
+      .from('notification')
+      .insert([
+        {
+          company_id: company_id,
+          member_id: member_id,
+          job_id: job_id,
+          noti_type: 'interest',
+          message: notiMessage,
+          is_read: false,           // สถานะรวม
+          company_is_read: false,   // 🔔 เด้งไปหน้าแจ้งเตือนของบริษัท
+          member_is_read: false     // 🔔 เด้งกลับมาหน้าแจ้งเตือนของเราด้วย!
+        }
+      ])
+      .select();
+
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      message: 'บันทึกความสนใจและส่งแจ้งเตือนเรียบร้อย!',
+      data: data[0]
+    });
+
+  } catch (err) {
+    console.error("❌ Error:", err);
+    return res.status(500).json({ error: 'เกิดข้อผิดพลาดในการส่งความสนใจ' });
   }
 });
 

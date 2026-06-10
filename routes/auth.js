@@ -71,46 +71,64 @@ router.post('/login', async (req, res) => {
     let role = 'user';
     let roleData = {};
 
-    const { data: admin } = await supabase
-      .from('admin')
-      .select('admin_id')
+    // 👑 [เพิ่มใหม่] 3. เช็คว่าเป็น Superadmin หรือไม่ (เช็คก่อน Admin ธรรมดา)
+    const { data: superadmin } = await supabase
+      .from('superadmin')
+      .select('superadmin_id')
       .eq('user_id', userId)
       .maybeSingle();
 
-    if (admin) {
-      role = 'admin';
+    if (superadmin) {
+      role = 'superadmin';
       roleData = {
-        admin_id: admin.admin_id
+        superadmin_id: superadmin.superadmin_id
       };
     } else {
-      const { data: company } = await supabase
-        .from('company')
-        .select('company_id, namecompany, description, position')
+      // 🔧 เช็คว่าเป็น Admin ธรรมดาหรือไม่
+      const { data: admin } = await supabase
+        .from('admin')
+        .select('admin_id')
         .eq('user_id', userId)
         .maybeSingle();
 
-      if (company) {
-        role = 'company';
+      if (admin) {
+        role = 'admin';
         roleData = {
-          company_id: company.company_id,
-          company_name: company.namecompany
+          admin_id: admin.admin_id
         };
       } else {
-        const { data: member } = await supabase
-          .from('member')
-          .select('member_id, bio, skill')
+        // 🏢 เช็คว่าเป็น Company หรือไม่
+        const { data: company } = await supabase
+          .from('company')
+          .select('company_id, namecompany, description, position')
           .eq('user_id', userId)
           .maybeSingle();
 
-        if (member) {
-          role = 'member';
+        if (company) {
+          role = 'company';
           roleData = {
-            member_id: member.member_id
+            company_id: company.company_id,
+            company_name: company.namecompany
           };
+        } else {
+          // 🧑‍💼 เช็คว่าเป็น Member หรือไม่
+          const { data: member } = await supabase
+            .from('member')
+            .select('member_id, bio, skill')
+            .eq('user_id', userId)
+            .maybeSingle();
+
+          if (member) {
+            role = 'member';
+            roleData = {
+              member_id: member.member_id
+            };
+          }
         }
       }
     }
 
+    // 4. ส่งข้อมูลกลับไปหา Flutter Client (รวมทั้ง user_id และ superadmin_id)
     return res.json({
       role: role,
       user_id: user.user_id,
