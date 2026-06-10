@@ -4,12 +4,19 @@ const nodemailer = require("nodemailer");
 const supabase = require("../db");
 const bcrypt = require('bcrypt'); // 🌟 เพิ่มบรรทัดนี้เข้าไปด้านบนสุดของไฟล์
 
+//  แก้ไขใหม่เป็นแบบนี้ครับ (เพิ่มการระบุ IPv4 และตั้งค่าหมดเวลา)
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com", // เปลี่ยนจาก service เป็นระบุ host โดยตรง
+  port: 465,             // พอร์ตสำหรับส่งเมลแบบปลอดภัย
+  secure: true,          // ใช้ SSL
   auth: {
     user: process.env.GMAIL_USER,
     pass: process.env.GMAIL_APP_PASSWORD,
   },
+  // 💡 ทริคสำคัญ: บังคับให้ระบบมองหาที่อยู่แบบ IPv4 ก่อน และถ้าส่งไม่ผ่านใน 10 วิให้ตัดสายทันที แอปจะได้ไม่หมุนค้าง
+  connectionTimeout: 10000, 
+  greetingTimeout: 10000,
+  dnsTimeout: 10000,
 });
 
 // ส่ง OTP
