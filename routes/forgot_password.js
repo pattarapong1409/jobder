@@ -6,17 +6,16 @@ const bcrypt = require('bcrypt'); // 🌟 เพิ่มบรรทัดน�
 
 //  แก้ไขใหม่เป็นแบบนี้ครับ (เพิ่มการระบุ IPv4 และตั้งค่าหมดเวลา)
 const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com", // เปลี่ยนจาก service เป็นระบุ host โดยตรง
-  port: 465,             // พอร์ตสำหรับส่งเมลแบบปลอดภัย
-  secure: true,          // ใช้ SSL
+  host: "smtp.gmail.com",
+  port: 587,             // 🔄 เปลี่ยนจาก 465 เป็น 587
+  secure: false,         // 🔄 พอร์ต 587 ต้องตั้ง secure เป็น false (แต่มันจะเข้ารหัสแบบ STARTTLS เองอัตโนมัติ)
   auth: {
     user: process.env.GMAIL_USER,
     pass: process.env.GMAIL_APP_PASSWORD,
   },
-  // 💡 ทริคสำคัญ: บังคับให้ระบบมองหาที่อยู่แบบ IPv4 ก่อน และถ้าส่งไม่ผ่านใน 10 วิให้ตัดสายทันที แอปจะได้ไม่หมุนค้าง
-  connectionTimeout: 10000, 
-  greetingTimeout: 10000,
-  dnsTimeout: 10000,
+  connectionTimeout: 15000, // ขยับเวลาเพิ่มเป็น 15 วินาทีให้สัญญานบน Cloud เคลื่อนที่
+  greetingTimeout: 15000,
+  dnsTimeout: 15000,
 });
 
 // ส่ง OTP
