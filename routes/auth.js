@@ -2,18 +2,47 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../db'); // ดึง supabase จากไฟล์ db.js
+const bcrypt = require("bcrypt");
+const axios = require("axios");
+
+// 🌟 [แก้ไขจุดที่ 1] เพิ่มการดึงแพ็กเกจ multer และสร้างตัวแปร upload สำหรับรับรูปภาพ
+const multer = require('multer');
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 } // จำกัดขนาดไฟล์ไว้ที่ 5MB เพื่อความปลอดภัย
+});
+
+/**
+ * 🔒 ฟังก์ชันตรวจสอบ reCAPTCHA ฝั่ง Server
+ */
+async function verifyCaptcha(captchaToken) {
+  if (!captchaToken) return false;
+  try {
+    const response = await axios.post(
+      "https://www.google.com/recaptcha/api/siteverify",
+      null,
+      {
+        params: {
+          secret: process.env.RECAPTCHA_SECRET_KEY,
+          response: captchaToken,
+        },
+      }
+    );
+    return response.data.success === true;
+  } catch (err) {
+    console.error("❌ reCAPTCHA verification error:", err.message);
+    return false;
+  }
+}
 
 /////////////////////////////////////////////////////////
-// 🔐 Login ทำให้ user ที่จะเข้าต้อง approved ก่อนเเล้ว
+// 🔐 Login Route 
 ////////////////////////////////////////////////////////
-const bcrypt = require("bcrypt");
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
-    return res.status(400).json({
-      error: 'กรอกอีเมลและรหัสผ่านให้ครบ'
-    });
+    return res.status(400).json({ error: 'กรอกอีเมลและรหัสผ่านให้ครบ' });
   }
 
   try {
@@ -27,9 +56,7 @@ router.post('/login', async (req, res) => {
     if (userError) throw userError;
 
     if (!user) {
-      return res.status(401).json({
-        error: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง'
-      });
+      return res.status(401).json({ error: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
     }
 
     let passwordIsValid = false;
@@ -38,16 +65,13 @@ router.post('/login', async (req, res) => {
     const dbPassword = user.password || '';
 
     if (dbPassword.startsWith('$2a$') || dbPassword.startsWith('$2b$')) {
-      // รหัสใหม่แบบ hash
       passwordIsValid = await bcrypt.compare(password, dbPassword);
     } else {
-      // รหัสเก่าแบบ plain text
       passwordIsValid = password === dbPassword;
 
       // ถ้า login ผ่านด้วยรหัสเก่า ให้แปลงเป็น hash อัตโนมัติ
       if (passwordIsValid) {
         const hashedPassword = await bcrypt.hash(password, 10);
-
         await supabase
           .from('users')
           .update({ password: hashedPassword })
@@ -56,9 +80,7 @@ router.post('/login', async (req, res) => {
     }
 
     if (!passwordIsValid) {
-      return res.status(401).json({
-        error: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง'
-      });
+      return res.status(401).json({ error: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
     }
 
     if (user.memberapproved === false) {
@@ -71,7 +93,7 @@ router.post('/login', async (req, res) => {
     let role = 'user';
     let roleData = {};
 
-    // 👑 [เพิ่มใหม่] 3. เช็คว่าเป็น Superadmin หรือไม่ (เช็คก่อน Admin ธรรมดา)
+    // 👑 3. เช็คว่าเป็น Superadmin หรือไม่
     const { data: superadmin } = await supabase
       .from('superadmin')
       .select('superadmin_id')
@@ -80,9 +102,7 @@ router.post('/login', async (req, res) => {
 
     if (superadmin) {
       role = 'superadmin';
-      roleData = {
-        superadmin_id: superadmin.superadmin_id
-      };
+      roleData = { superadmin_id: superadmin.superadmin_id };
     } else {
       // 🔧 เช็คว่าเป็น Admin ธรรมดาหรือไม่
       const { data: admin } = await supabase
@@ -93,9 +113,7 @@ router.post('/login', async (req, res) => {
 
       if (admin) {
         role = 'admin';
-        roleData = {
-          admin_id: admin.admin_id
-        };
+        roleData = { admin_id: admin.admin_id };
       } else {
         // 🏢 เช็คว่าเป็น Company หรือไม่
         const { data: company } = await supabase
@@ -120,15 +138,13 @@ router.post('/login', async (req, res) => {
 
           if (member) {
             role = 'member';
-            roleData = {
-              member_id: member.member_id
-            };
+            roleData = { member_id: member.member_id };
           }
         }
       }
     }
 
-    // 4. ส่งข้อมูลกลับไปหา Flutter Client (รวมทั้ง user_id และ superadmin_id)
+    // 4. ส่งข้อมูลกลับไปหา Client
     return res.json({
       role: role,
       user_id: user.user_id,
@@ -142,29 +158,9 @@ router.post('/login', async (req, res) => {
 
   } catch (err) {
     console.error(err);
-    return res.status(500).json({
-      error: 'เกิดข้อผิดพลาดในเซิร์ฟเวอร์'
-    });
+    return res.status(500).json({ error: 'เกิดข้อผิดพลาดในเซิร์ฟเวอร์' });
   }
 });
-const axios = require("axios");
-
-async function verifyCaptcha(captchaToken) {
-  if (!captchaToken) return false;
-
-  const response = await axios.post(
-    "https://www.google.com/recaptcha/api/siteverify",
-    null,
-    {
-      params: {
-        secret: process.env.RECAPTCHA_SECRET_KEY,
-        response: captchaToken,
-      },
-    }
-  );
-
-  return response.data.success === true;
-}
 
 // =====================================================
 // 🧩 Register Company
@@ -176,13 +172,10 @@ router.post("/register/company", upload.fields([
     const { name, email, password, address, phone, description, captchaToken } = req.body;
 
     if (!name || !email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: "กรุณากรอกข้อมูลให้ครบ"
-      });
+      return res.status(400).json({ success: false, error: "กรุณากรอกข้อมูลให้ครบ" });
     }
 
-    // 🚨 🌟 เพิ่มระบบตรวจสอบความปลอดภัยของรหัสผ่าน (พิมพ์ใหญ่ + พิมพ์เล็ก) ด่านสุดท้าย
+    // ตรวจสอบความปลอดภัยของรหัสผ่าน
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])/;
     if (!passwordRegex.test(password)) {
       return res.status(400).json({
@@ -191,9 +184,7 @@ router.post("/register/company", upload.fields([
       });
     }
 
-    // ==========================
-    // ตรวจสอบอีเมลซ้ำจาก users
-    // ==========================
+    // ตรวจสอบอีเมลซ้ำ
     const { data: existingUser } = await supabase
       .from("users")
       .select("email")
@@ -201,42 +192,11 @@ router.post("/register/company", upload.fields([
       .maybeSingle();
 
     if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        error: "อีเมลนี้ถูกใช้งานแล้ว"
-      });
+      return res.status(400).json({ success: false, error: "อีเมลนี้ถูกใช้งานแล้ว" });
     }
 
-    // ==========================
-    // อัปโหลดโลโก้บริษัท
-    // ==========================
-    let companyLogoUrl = "";
-
-    if (req.files && req.files["companyLogo"]) {
-      const file = req.files["companyLogo"][0];
-      const fileExt = file.originalname.split(".").pop();
-      const fileName = `company_${Date.now()}.${fileExt}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from("avatars")
-        .upload(fileName, file.buffer, {
-          contentType: file.mimetype,
-        });
-
-      if (uploadError) {
-        console.error("Company logo upload error:", uploadError.message);
-      } else {
-        const { data: publicUrlData } = supabase.storage
-          .from("avatars")
-          .getPublicUrl(fileName);
-
-        companyLogoUrl = publicUrlData.publicUrl;
-      }
-    }
-
-    // ── 🌟 ระบบตรวจสอบ CAPTCHA สำหรับโมบายล์และเว็บ ──────────────────
+    // ระบบตรวจสอบ CAPTCHA
     let captchaOk = false;
-    
     if (captchaToken === "mobile_verified_emoji") {
       captchaOk = true;
     } else {
@@ -244,17 +204,33 @@ router.post("/register/company", upload.fields([
     }
 
     if (!captchaOk) {
-      return res.status(400).json({
-        success: false,
-        error: "กรุณายืนยัน CAPTCHA ก่อนสมัครสมาชิก"
-      });
+      return res.status(400).json({ success: false, error: "กรุณายืนยัน CAPTCHA ก่อนสมัครสมาชิก" });
     }
 
-    // ==========================
-    // สร้าง User ก่อน
-    // ==========================
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // 🌟 [แก้ไขจุดที่ 2] อัปโหลดโลโก้บริษัทและจัดการ Error อย่างเป็นระบบ
+    let companyLogoUrl = "";
+    if (req.files && req.files["companyLogo"]) {
+      const file = req.files["companyLogo"][0];
+      const fileExt = file.originalname.split(".").pop();
+      const fileName = `company_${Date.now()}.${fileExt}`;
 
+      const { error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(fileName, file.buffer, { contentType: file.mimetype });
+
+      if (uploadError) {
+        throw new Error(`ไม่สามารถอัปโหลดรูปโลโก้ได้: ${uploadError.message}`);
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from("avatars")
+        .getPublicUrl(fileName);
+
+      companyLogoUrl = publicUrlData.publicUrl;
+    }
+
+    // สร้าง User ในตาราง users
+    const hashedPassword = await bcrypt.hash(password, 10);
     const { data: newUser, error: userError } = await supabase
       .from("users")
       .insert([
@@ -273,9 +249,7 @@ router.post("/register/company", upload.fields([
 
     if (userError) throw userError;
 
-    // ==========================
-    // สร้าง Company
-    // ==========================
+    // สร้างข้อมูลบริษัทในตาราง company
     const { data: companyData, error: companyError } = await supabase
       .from("company")
       .insert([
@@ -298,22 +272,18 @@ router.post("/register/company", upload.fields([
     return res.status(201).json({
       success: true,
       message: "สมัครสมาชิกบริษัทสำเร็จ 🎉",
-      user: newUser,
       user_id: newUser.user_id,
       role: "company",
+      user: newUser,
       company: companyData,
       company_id: companyData.company_id
     });
 
   } catch (err) {
     console.error("❌ register company error:", err);
-    return res.status(500).json({
-      success: false,
-      error: err.message
-    });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
-
 
 // =====================================================
 // 🧩 Register User
@@ -326,13 +296,10 @@ router.post("/register/user", upload.fields([
     const { name, email, password, address, phone, education, skills, resume, captchaToken } = req.body;
 
     if (!name || !email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: "กรุณากรอก name, email และ password ให้ครบ",
-      });
+      return res.status(400).json({ success: false, error: "กรุณากรอกข้อมูลให้ครบถ้วน" });
     }
 
-    // 🚨 🌟 เพิ่มระบบตรวจสอบความปลอดภัยของรหัสผ่าน (พิมพ์ใหญ่ + พิมพ์เล็ก) ด่านสุดท้าย
+    // ตรวจสอบความปลอดภัยของรหัสผ่าน
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])/;
     if (!passwordRegex.test(password)) {
       return res.status(400).json({
@@ -341,6 +308,7 @@ router.post("/register/user", upload.fields([
       });
     }
 
+    // ตรวจสอบอีเมลซ้ำ
     const { data: existing, error: existingError } = await supabase
       .from("users")
       .select("email")
@@ -350,12 +318,22 @@ router.post("/register/user", upload.fields([
     if (existingError) throw existingError;
 
     if (existing) {
-      return res.status(400).json({
-        success: false,
-        error: "อีเมลนี้ถูกใช้งานแล้ว",
-      });
+      return res.status(400).json({ success: false, error: "อีเมลนี้ถูกใช้งานแล้ว" });
     }
 
+    // ระบบตรวจสอบ CAPTCHA
+    let captchaOk = false;
+    if (captchaToken === "mobile_verified_emoji") {
+      captchaOk = true;
+    } else {
+      captchaOk = await verifyCaptcha(captchaToken);
+    }
+
+    if (!captchaOk) {
+      return res.status(400).json({ success: false, error: "กรุณายืนยัน CAPTCHA ก่อนสมัครสมาชิก" });
+    }
+
+    // 🌟 [แก้ไขจุดที่ 3] จัดการอัปโหลดไฟล์รูปภาพ และ Resume ของผู้สมัครงานให้ปลอดภัยขึ้น
     let profileImageUrl = "https://via.placeholder.com/150";
     let resumeFileUrl = resume || "";
 
@@ -366,12 +344,9 @@ router.post("/register/user", upload.fields([
 
       const { error: uploadError } = await supabase.storage
         .from("avatars")
-        .upload(fileName, file.buffer, {
-          contentType: file.mimetype,
-          upsert: true,
-        });
+        .upload(fileName, file.buffer, { contentType: file.mimetype, upsert: true });
 
-      if (uploadError) throw uploadError;
+      if (uploadError) throw new Error(`ไม่สามารถอัปโหลดรูปโปรไฟล์ได้: ${uploadError.message}`);
 
       const { data: publicUrlData } = supabase.storage
         .from("avatars")
@@ -387,12 +362,9 @@ router.post("/register/user", upload.fields([
 
       const { error: uploadError } = await supabase.storage
         .from("resumes")
-        .upload(fileName, file.buffer, {
-          contentType: file.mimetype,
-          upsert: true,
-        });
+        .upload(fileName, file.buffer, { contentType: file.mimetype, upsert: true });
 
-      if (uploadError) throw uploadError;
+      if (uploadError) throw new Error(`ไม่สามารถอัปโหลดไฟล์ Resume ได้: ${uploadError.message}`);
 
       const { data: publicUrlData } = supabase.storage
         .from("resumes")
@@ -401,24 +373,8 @@ router.post("/register/user", upload.fields([
       resumeFileUrl = publicUrlData.publicUrl;
     }
 
-    // ── 🌟 ส่วนที่แก้ไขดักจับ CAPTCHA เก่า-ใหม่ ──────────────────
-    let captchaOk = false;
-    
-    if (captchaToken === "mobile_verified_emoji") {
-      captchaOk = true;
-    } else {
-      captchaOk = await verifyCaptcha(captchaToken);
-    }
-
-    if (!captchaOk) {
-      return res.status(400).json({
-        success: false,
-        error: "กรุณายืนยัน CAPTCHA ก่อนสมัครสมาชิก"
-      });
-    }
-
+    // บันทึกข้อมูลลงฐานข้อมูล
     const hashedPassword = await bcrypt.hash(password, 10);
-
     const { data: newUser, error: userError } = await supabase
       .from("users")
       .insert([
@@ -453,7 +409,7 @@ router.post("/register/user", upload.fields([
 
     if (memberError) throw memberError;
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "✅ สมัครสมาชิกผู้ใช้สำเร็จ",
       user_id: newUser.user_id,
@@ -464,7 +420,7 @@ router.post("/register/user", upload.fields([
     });
   } catch (err) {
     console.error("❌ register user error:", err.message);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       error: err.message || "เกิดข้อผิดพลาดในการสมัครสมาชิกผู้ใช้",
     });
