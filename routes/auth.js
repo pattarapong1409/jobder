@@ -5,7 +5,7 @@ const supabase = require('../db'); // ดึง supabase จากไฟล์ d
 const bcrypt = require("bcrypt");
 const axios = require("axios");
 
-// 🌟 [แก้ไขจุดที่ 1] เพิ่มการดึงแพ็กเกจ multer และสร้างตัวแปร upload สำหรับรับรูปภาพ
+// 🌟 เพิ่มการดึงแพ็กเกจ multer และสร้างตัวแปร upload สำหรับรับรูปภาพ
 const multer = require('multer');
 const upload = multer({ 
   storage: multer.memoryStorage(),
@@ -175,7 +175,32 @@ router.post("/register/company", upload.fields([
       return res.status(400).json({ success: false, error: "กรุณากรอกข้อมูลให้ครบ" });
     }
 
-    // ตรวจสอบความปลอดภัยของรหัสผ่าน
+    // 🔒 [เช็คจุดที่ 1] ตรวจสอบห้ามมีเว้นวรรคในรหัสผ่าน
+    if (password.includes(" ")) {
+      return res.status(400).json({
+        success: false,
+        error: "รหัสผ่านต้องไม่มีช่องว่างหรือการเว้นวรรค"
+      });
+    }
+
+    // 🔒 [เช็คจุดที่ 2] ตรวจสอบความยาวรหัสผ่าน (ต้องไม่น้อยกว่า 8 ตัวอักษร)
+    if (password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        error: "รหัสผ่านต้องมีความยาวอย่างน้อย 8 ตัวอักษรขึ้นไป"
+      });
+    }
+
+    // 🔒 [เช็คจุดที่ 3] ตรวจสอบห้ามใช้อักขระแปลกปลอม (อนุญาตเฉพาะ A-Z, a-z, 0-9 และ !@#$%^&*()_+-=)
+    const safePasswordRegex = /^[a-zA-Z0-9!@#\$%\^&\*\(\)_\+\-=]+$/;
+    if (!safePasswordRegex.test(password)) {
+      return res.status(400).json({
+        success: false,
+        error: "รหัสผ่านมีอักขระที่ไม่ปลอดภัย อนุญาตเฉพาะตัวอักษรภาษาอังกฤษ ตัวเลข และสัญลักษณ์พื้นฐาน (!@#$%^&*()_+-=) เท่านั้น"
+      });
+    }
+
+    // ตรวจสอบความปลอดภัยของรหัสผ่าน (ต้องมีพิมพ์ใหญ่และพิมพ์เล็กอย่างน้อย 1 ตัว)
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])/;
     if (!passwordRegex.test(password)) {
       return res.status(400).json({
@@ -207,7 +232,7 @@ router.post("/register/company", upload.fields([
       return res.status(400).json({ success: false, error: "กรุณายืนยัน CAPTCHA ก่อนสมัครสมาชิก" });
     }
 
-    // 🌟 [แก้ไขจุดที่ 2] อัปโหลดโลโก้บริษัทและจัดการ Error อย่างเป็นระบบ
+    // อัปโหลดโลโก้บริษัทและจัดการ Error อย่างเป็นระบบ
     let companyLogoUrl = "";
     if (req.files && req.files["companyLogo"]) {
       const file = req.files["companyLogo"][0];
@@ -299,7 +324,32 @@ router.post("/register/user", upload.fields([
       return res.status(400).json({ success: false, error: "กรุณากรอกข้อมูลให้ครบถ้วน" });
     }
 
-    // ตรวจสอบความปลอดภัยของรหัสผ่าน
+    // 🔒 [เช็คจุดที่ 1] ตรวจสอบห้ามมีเว้นวรรคในรหัสผ่าน
+    if (password.includes(" ")) {
+      return res.status(400).json({
+        success: false,
+        error: "รหัสผ่านต้องไม่มีช่องว่างหรือการเว้นวรรค"
+      });
+    }
+
+    // 🔒 [เช็คจุดที่ 2] ตรวจสอบความยาวรหัสผ่าน (ต้องไม่น้อยกว่า 8 ตัวอักษร)
+    if (password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        error: "รหัสผ่านต้องมีความยาวอย่างน้อย 8 ตัวอักษรขึ้นไป"
+      });
+    }
+
+    // 🔒 [เช็คจุดที่ 3] ตรวจสอบห้ามใช้อักขระแปลกปลอม (อนุญาตเฉพาะ A-Z, a-z, 0-9 และ !@#$%^&*()_+-=)
+    const safePasswordRegex = /^[a-zA-Z0-9!@#\$%\^&\*\(\)_\+\-=]+$/;
+    if (!safePasswordRegex.test(password)) {
+      return res.status(400).json({
+        success: false,
+        error: "รหัสผ่านมีอักขระที่ไม่ปลอดภัย อนุญาตเฉพาะตัวอักษรภาษาอังกฤษ ตัวเลข และสัญลักษณ์พื้นฐาน (!@#$%^&*()_+-=) เท่านั้น"
+      });
+    }
+
+    // ตรวจสอบความปลอดภัยของรหัสผ่าน (ต้องมีพิมพ์ใหญ่และพิมพ์เล็กอย่างน้อย 1 ตัว)
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])/;
     if (!passwordRegex.test(password)) {
       return res.status(400).json({
@@ -333,7 +383,7 @@ router.post("/register/user", upload.fields([
       return res.status(400).json({ success: false, error: "กรุณายืนยัน CAPTCHA ก่อนสมัครสมาชิก" });
     }
 
-    // 🌟 [แก้ไขจุดที่ 3] จัดการอัปโหลดไฟล์รูปภาพ และ Resume ของผู้สมัครงานให้ปลอดภัยขึ้น
+    // จัดการอัปโหลดไฟล์รูปภาพ และ Resume ของผู้สมัครงานให้ปลอดภัยขึ้น
     let profileImageUrl = "https://via.placeholder.com/150";
     let resumeFileUrl = resume || "";
 
@@ -388,7 +438,7 @@ router.post("/register/user", upload.fields([
           resume: resumeFileUrl,
           status: true,
           memberapproved: false,
-        },
+        }
       ])
       .select("*")
       .single();
@@ -402,7 +452,7 @@ router.post("/register/user", upload.fields([
           user_id: newUser.user_id,
           bio: education || "",
           skill: skills || "",
-        },
+        }
       ])
       .select()
       .single();
