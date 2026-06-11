@@ -143,7 +143,7 @@ router.get('/searchjobs', async (req, res) => {
 });
 
 // =====================================================
-// 👤 PART 2: USER & MEMBER POSTS
+// 👤 PART 2: USER & MEMBER POSTS (ฉบับแก้ไขบั๊ก Matching)
 // =====================================================
 
 function normalizeText(text) {
@@ -160,11 +160,12 @@ router.post('/memberpost', async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabase
+    // 1. บันทึกโพสต์หางานของ Member ลงในตาราง memberpost
+    const { data: insertedPost, error: insertError } = await supabase
       .from('memberpost')
       .insert([
         {
-          member_id,
+          member_id: parseInt(member_id, 10),
           title,
           description,
           salary,
@@ -174,9 +175,9 @@ router.post('/memberpost', async (req, res) => {
       .select()
       .single();
 
-    if (error) throw error;
+    if (insertError) throw insertError;
 
-    const insertedPost = data;
+    // 2. ทำการค้นหาตำแหน่งงานจากฝั่งบริษัท (jobpost) ที่ตรงกับคำค้นหา (Keyword)
     const keyword = normalizeText(title);
 
     if (keyword) {
@@ -185,33 +186,49 @@ router.post('/memberpost', async (req, res) => {
         .select('job_id, company_id, title')
         .ilike('title', `%${keyword}%`);
 
+      // 3. ตรวจสอบว่ามีงานของบริษัทไหนบ้างที่ Match ตรงกัน
       if (!matchError && matchedJobs && matchedJobs.length > 0) {
+        
+        // 🌟 [แก้ไขจุดสำคัญ] ปรับแต่งข้อมูล Object แจ้งเตือนให้เข้าคู่กับระบบกรองหน้าบ้าน
         const notifications = matchedJobs.map(job => ({
           company_id: job.company_id,
-          member_id: parseInt(member_id),
+          member_id: parseInt(member_id, 10),
           app_id: null,
           job_id: job.job_id,
           post_id: insertedPost.post_id,
-          noti_type: 'member_match',
-          message: `มีผู้สมัครโพสต์หางานตำแหน่ง "${title}" ที่ตรงกับงานของบริษัทคุณ`,
+          
+          // 🛠️ แก้ไขจาก 'member_match' -> เป็น 'job_match' เพื่อให้วิ่งผ่านด่าน Array Filter ของฝั่งผู้ใช้
+          noti_type: 'job_match', 
+          
+          // ข้อความแจ้งเตือนที่ชัดเจนและสื่อสารเข้าใจง่าย
+          message: `พบงานที่ตรงกับคุณ! ตำแหน่ง "${job.title}" จากบริษัทชั้นนำ เข้าดูรายละเอียดเลย`,
+          
+          // ตั้งค่าสถานะการอ่านให้เป็นเท็จทั้งหมด ป้องกันการหลุดสายตาจากระเบียบตรวจนับแจ้งเตือนใหม่
           is_read: false,
           company_is_read: false,
           member_is_read: false
         }));
 
-        await supabase
+        // 4. บันทึกชุดข้อมูลแจ้งเตือนลงในตาราง notification พร้อมกันทั้งหมด (Bulk Insert)
+        const { error: notiInsertError } = await supabase
           .from('notification')
           .insert(notifications);
+
+        if (notiInsertError) {
+          console.error("❌ บันทึกแจ้งเตือน Matching ผิดพลาด:", notiInsertError.message);
+        }
       }
     }
 
-    res.json({
-      message: '✅ เพิ่มโพสต์สำเร็จ',
+    // 5. ส่งผลลัพธ์ตอบกลับไปยังหน้าแอปพลิเคชัน Flutter
+    return res.json({
+      message: '✅ เพิ่มโพสต์และประมวลผลจับคู่งานสำเร็จ',
       data: insertedPost
     });
+
   } catch (error) {
-    console.error("Error inserting memberpost:", error.message);
-    res.status(400).json({
+    console.error("💥 Error ในขั้นตอน memberpost:", error.message);
+    return res.status(400).json({
       error: error.message
     });
   }
