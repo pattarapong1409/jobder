@@ -147,9 +147,6 @@ router.post('/login', async (req, res) => {
     });
   }
 });
-
-
-
 const axios = require("axios");
 
 async function verifyCaptcha(captchaToken) {
@@ -172,10 +169,6 @@ async function verifyCaptcha(captchaToken) {
 // =====================================================
 // 🧩 Register Company
 // =====================================================
-const multer = require('multer');
-const upload = multer({ storage: multer.memoryStorage() })
-
-
 router.post("/register/company", upload.fields([
   { name: 'companyLogo', maxCount: 1 }
 ]), async (req, res) => {
@@ -186,6 +179,15 @@ router.post("/register/company", upload.fields([
       return res.status(400).json({
         success: false,
         error: "กรุณากรอกข้อมูลให้ครบ"
+      });
+    }
+
+    // 🚨 🌟 เพิ่มระบบตรวจสอบความปลอดภัยของรหัสผ่าน (พิมพ์ใหญ่ + พิมพ์เล็ก) ด่านสุดท้าย
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])/;
+    if (!passwordRegex.test(password)) {
+      return res.status(400).json({
+        success: false,
+        error: "รหัสผ่านไม่ปลอดภัย ต้องประกอบด้วยตัวพิมพ์ใหญ่ (A-Z) และพิมพ์เล็ก (a-z) อย่างน้อยอย่างละ 1 ตัว"
       });
     }
 
@@ -212,7 +214,6 @@ router.post("/register/company", upload.fields([
 
     if (req.files && req.files["companyLogo"]) {
       const file = req.files["companyLogo"][0];
-
       const fileExt = file.originalname.split(".").pop();
       const fileName = `company_${Date.now()}.${fileExt}`;
 
@@ -233,15 +234,12 @@ router.post("/register/company", upload.fields([
       }
     }
 
-    // ── 🌟 แก้ไข: เพิ่มระบบตรวจสอบ CAPTCHA สำหรับโมบายล์และเว็บ ──────────────────
-    
+    // ── 🌟 ระบบตรวจสอบ CAPTCHA สำหรับโมบายล์และเว็บ ──────────────────
     let captchaOk = false;
     
-    // ถ้าส่งค่ามาจากแอปพลิเคชัน Flutter ด้วย Token พิเศษ ให้ผ่านได้เลย
     if (captchaToken === "mobile_verified_emoji") {
       captchaOk = true;
     } else {
-      // ถ้ามาจากเว็บเวอร์ชันเดิม ให้เรียกใช้ฟังก์ชันตรวจสอบ reCAPTCHA ของ Google ปกติ
       captchaOk = await verifyCaptcha(captchaToken);
     }
 
@@ -251,8 +249,6 @@ router.post("/register/company", upload.fields([
         error: "กรุณายืนยัน CAPTCHA ก่อนสมัครสมาชิก"
       });
     }
-
-    // ────────────────────────────────────────────────────────────────────────
 
     // ==========================
     // สร้าง User ก่อน
@@ -311,7 +307,6 @@ router.post("/register/company", upload.fields([
 
   } catch (err) {
     console.error("❌ register company error:", err);
-
     return res.status(500).json({
       success: false,
       error: err.message
@@ -319,13 +314,10 @@ router.post("/register/company", upload.fields([
   }
 });
 
+
 // =====================================================
 // 🧩 Register User
 // =====================================================
-
-
-
-// 🔗 สมัครสมาชิกผู้ใช้ + แนบรูปโปรไฟล์ + แนบเรซูเม่
 router.post("/register/user", upload.fields([
   { name: "profileImage", maxCount: 1 },
   { name: "resumeFile", maxCount: 1 }
@@ -337,6 +329,15 @@ router.post("/register/user", upload.fields([
       return res.status(400).json({
         success: false,
         error: "กรุณากรอก name, email และ password ให้ครบ",
+      });
+    }
+
+    // 🚨 🌟 เพิ่มระบบตรวจสอบความปลอดภัยของรหัสผ่าน (พิมพ์ใหญ่ + พิมพ์เล็ก) ด่านสุดท้าย
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])/;
+    if (!passwordRegex.test(password)) {
+      return res.status(400).json({
+        success: false,
+        error: "รหัสผ่านไม่ปลอดภัย ต้องประกอบด้วยตัวพิมพ์ใหญ่ (A-Z) และพิมพ์เล็ก (a-z) อย่างน้อยอย่างละ 1 ตัว"
       });
     }
 
@@ -400,15 +401,12 @@ router.post("/register/user", upload.fields([
       resumeFileUrl = publicUrlData.publicUrl;
     }
 
-    // ── 🌟 ส่วนที่แก้ไขดักจับ CAPTCHA เก่า-ใหม่ ──────────────────────────────────
-    
+    // ── 🌟 ส่วนที่แก้ไขดักจับ CAPTCHA เก่า-ใหม่ ──────────────────
     let captchaOk = false;
     
-    // ถ้าส่งมาจากแอป Flutter (มีค่า token ตรงกัน) ให้ข้ามไปเลย
     if (captchaToken === "mobile_verified_emoji") {
       captchaOk = true;
     } else {
-      // ถ้าส่งมาจากเว็บหรือที่อื่น ให้ใช้ฟังก์ชัน verifyCaptcha ตรวจสอบแบบเดิม
       captchaOk = await verifyCaptcha(captchaToken);
     }
 
@@ -418,8 +416,6 @@ router.post("/register/user", upload.fields([
         error: "กรุณายืนยัน CAPTCHA ก่อนสมัครสมาชิก"
       });
     }
-
-    // ────────────────────────────────────────────────────────────────────────
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
