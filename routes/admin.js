@@ -69,19 +69,23 @@ router.patch('/admin/users/approve/:id', async (req, res) => {
 });
 
 // ==========================================
-// 3. API สำหรับปฏิเสธและลบ User ทิ้ง (DELETE)
+// 3. API สำหรับปฏิเสธผู้ใช้งาน (เปลี่ยนจากลบเป็นการบันทึกสถานะปฏิเสธ)
 // ==========================================
-router.delete('/admin/users/reject/:id', async (req, res) => {
+router.put('/admin/users/reject/:id', async (req, res) => {
   const userId = parseInt(req.params.id, 10);
   if (isNaN(userId)) return res.status(400).json({ error: 'ID ไม่ถูกต้อง' });
 
   try {
-    // สั่งลบข้อมูลออกจากตาราง users
+    // 📝 เปลี่ยนจาก .delete() เป็น .update()
+    // ตั้งค่า memberapproved = false และ status = false เพื่อระบุว่าถูกปฏิเสธ/ระงับการใช้งาน
     const { data, error } = await supabase
       .from('users')
-      .delete()
+      .update({ 
+        memberapproved: false, 
+        status: false // เราใช้ status: false ร่วมกับ memberapproved: false เป็นสัญลักษณ์ว่า "ถูกปฏิเสธ"
+      })
       .eq('user_id', userId)
-      .select('email'); // ดึงอีเมลกลับมาเช็คว่าลบสำเร็จ
+      .select('email, fullname');
 
     if (error) throw error;
     
@@ -89,110 +93,99 @@ router.delete('/admin/users/reject/:id', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบผู้ใช้งานนี้ในระบบ' });
     }
 
-    res.json({ message: 'ปฏิเสธและลบผู้ใช้งานสำเร็จ', user: data[0] });
+    res.json({ message: 'ปฏิเสธคำขอและระงับสิทธิ์ผู้ใช้งานนี้เรียบร้อยแล้ว', user: data[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // 1. API ดึงข้อมูลโพสต์ (แยกตาม type: member หรือ company)
+// 1. API ดึงข้อมูลโพสต์ทั้งหมด แยกตาม type: member หรือ company
+// GET /admin/posts?type=company
+// GET /admin/posts?type=member
 router.get('/admin/posts', async (req, res) => {
   const { type } = req.query;
 
   try {
+    if (!type || !['company', 'member'].includes(type)) {
+      return res.status(400).json({
+        error: 'กรุณาระบุ type เป็น company หรือ member'
+      });
+    }
+
+    // ============================
+    // โพสต์งานของบริษัท
+    // ============================
     if (type === 'company') {
       const { data: posts, error } = await supabase
         .from('jobpost')
-        .select('*')
+        .select(`
+          *,
+          company:company_id (
+            company_id,
+            user_id,
+            namecompany,
+            company_logo
+          )
+        `)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
 
-      const companyIds = posts
-        .map(post => post.company_id)
-        .filter(id => id !== null && id !== undefined);
-
-      let companies = [];
-
-      if (companyIds.length > 0) {
-        const { data: companyData, error: companyError } = await supabase
-          .from('company')
-          .select('company_id, user_id, namecompany, company_logo')
-          .in('company_id', companyIds);
-
-        if (companyError) throw companyError;
-        companies = companyData || [];
-      }
-
-      const result = posts.map(post => {
-        const company = companies.find(c => c.company_id === post.company_id);
-
+      const result = (posts || []).map((post) => {
         return {
           ...post,
           type: 'company',
-          display_name: company?.namecompany || 'บริษัท',
-          image_url: company?.company_logo || ''
+          display_name: post.company?.namecompany || 'บริษัท',
+          image_url: post.company?.company_logo || '',
+          sort_date: post.created_at || null,
         };
       });
 
       return res.json(result);
-    } else {
-       const { data: posts, error } = await supabase
-    .from('memberpost')
-    .select('*')
-    .order('created_at', { ascending: false });
+    }
 
-  if (error) throw error;
+    // ============================
+    // โพสต์ของคนหางาน
+    // ============================
+    if (type === 'member') {
+      const { data: posts, error } = await supabase
+        .from('memberpost')
+        .select(`
+          *,
+          member:member_id (
+            member_id,
+            user_id,
+            users:user_id (
+              user_id,
+              fullname,
+              profile_image
+            )
+          )
+        `)
+        .order('created_at', { ascending: false });
 
-  const memberIds = posts
-    .map(post => post.member_id)
-    .filter(id => id !== null && id !== undefined);
+      if (error) throw error;
 
-  let members = [];
+      const result = (posts || []).map((post) => {
+        return {
+          ...post,
+          type: 'member',
+          display_name: post.member?.users?.fullname || 'ผู้สมัครงาน',
+          image_url: post.member?.users?.profile_image || '',
+          sort_date: post.created_at || null,
+        };
+      });
 
-  if (memberIds.length > 0) {
-    const { data: memberData, error: memberError } = await supabase
-      .from('member')
-      .select('member_id, user_id')
-      .in('member_id', memberIds);
-
-    if (memberError) throw memberError;
-    members = memberData || [];
-  }
-
-  const userIds = members
-    .map(member => member.user_id)
-    .filter(id => id !== null && id !== undefined);
-
-  let users = [];
-
-  if (userIds.length > 0) {
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('user_id, fullname, profile_image')
-      .in('user_id', userIds);
-
-    if (userError) throw userError;
-    users = userData || [];
-  }
-
-  const result = posts.map(post => {
-    const member = members.find(m => m.member_id === post.member_id);
-    const user = users.find(u => u.user_id === member?.user_id);
-
-    return {
-      ...post,
-      type: 'member',
-      display_name: user?.fullname || 'ผู้สมัครงาน',
-      image_url: user?.profile_image || ''
-    };
-  });
-
-  return res.json(result);
+      return res.json(result);
     }
   } catch (err) {
-    console.error("Fetch Posts Error:", err);
-    return res.status(500).json({ error: 'ดึงข้อมูลโพสต์ล้มเหลว' });
+    console.error("❌ Fetch Posts Error:", err);
+
+    return res.status(500).json({
+      error: 'ดึงข้อมูลโพสต์ล้มเหลว',
+      detail: err.message
+    });
   }
 });
 
@@ -360,4 +353,124 @@ router.get('/admin/dashboard', async (req, res) => {
     });
   }
 });
+
+// ระงับผู้ใช้
+// PATCH /admin/users/suspend/:userId
+// ================================
+router.patch('/admin/users/suspend/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { days, reason } = req.body;
+
+    const suspendUntil = new Date();
+    suspendUntil.setDate(
+      suspendUntil.getDate() + (parseInt(days) || 7)
+    );
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        is_suspended: true,
+        suspend_until: suspendUntil.toISOString(),
+        suspend_reason: reason || 'ละเมิดกฎการใช้งาน'
+      })
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    console.log(
+      `🚫 Suspend User ${userId} until ${suspendUntil}`
+    );
+
+    res.json({
+      success: true,
+      message: 'ระงับบัญชีสำเร็จ',
+      user: data
+    });
+
+  } catch (err) {
+    console.error('❌ Suspend Error:', err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ปลดระงับผู้ใช้
+// PATCH /admin/users/unsuspend/:userId
+// ================================
+router.patch('/admin/users/unsuspend/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        is_suspended: false,
+        suspend_until: null,
+        suspend_reason: null
+      })
+      .eq('user_id', userId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    console.log(`✅ Unsuspend User ${userId}`);
+
+    res.json({
+      success: true,
+      message: 'ปลดระงับสำเร็จ',
+      user: data
+    });
+
+  } catch (err) {
+    console.error('❌ Unsuspend Error:', err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ผู้ใช้ทั้งหมด
+// GET /admin/users/all
+// ================================
+router.get('/admin/users/all', async (req, res) => {
+  try {
+
+    const { data, error } = await supabase
+      .from('users')
+      .select(`
+        user_id,
+        fullname,
+        email,
+        phone,
+        profile_image,
+        is_suspended,
+        suspend_until,
+        suspend_reason
+      `)
+      .order('user_id', { ascending: false });
+
+    if (error) throw error;
+
+    res.json(data);
+
+  } catch (err) {
+    console.error('❌ Get Users Error:', err);
+
+    res.status(500).json({
+      error: err.message
+    });
+  }
+});
+
+
+
 module.exports = router;

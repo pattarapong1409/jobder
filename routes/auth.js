@@ -83,7 +83,58 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' });
     }
 
+    // 🚫 ตรวจสอบบัญชีที่ถูกระงับ
+    if (user.is_suspended === true) {
+      const now = new Date();
+      const suspendUntil = user.suspend_until
+        ? new Date(user.suspend_until)
+        : null;
+
+      // ถ้ามีวันสิ้นสุด และยังไม่หมดเวลาระงับ
+      if (suspendUntil && suspendUntil > now) {
+        return res.status(403).json({
+          error: 'บัญชีของคุณถูกระงับการใช้งานชั่วคราว',
+          reason: user.suspend_reason || 'ละเมิดกฎการใช้งาน',
+          suspend_until: user.suspend_until
+        });
+      }
+
+      // ถ้าไม่มีวันสิ้นสุด = ระงับถาวร
+      if (!suspendUntil) {
+        return res.status(403).json({
+          error: 'บัญชีของคุณถูกระงับการใช้งาน',
+          reason: user.suspend_reason || 'ละเมิดกฎการใช้งาน',
+          suspend_until: null
+        });
+      }
+
+      // ถ้าหมดเวลาระงับแล้ว ให้ปลดระงับอัตโนมัติ
+      if (suspendUntil <= now) {
+        await supabase
+          .from('users')
+          .update({
+            is_suspended: false,
+            suspend_until: null,
+            suspend_reason: null
+          })
+          .eq('user_id', user.user_id);
+
+        user.is_suspended = false;
+        user.suspend_until = null;
+        user.suspend_reason = null;
+      }
+    }
+    
+    // 🔍 ด่านตรวจสถานะการสมัครและการปฏิเสธจากผู้ดูแลระบบ
     if (user.memberapproved === false) {
+      // 💡 เคสที่ 1: แอดมินกดปฏิเสธ (เซ็ตสถานะเป็นเท็จร่วมด้วย)
+      if (user.status === false) {
+        return res.status(403).json({
+          error: 'ใบสมัครสมาชิกของคุณถูกปฏิเสธโดยผู้ดูแลระบบ เนื่องจากข้อมูลไม่ผ่านเกณฑ์การตรวจสอบ'
+        });
+      }
+      
+      // 💡 เคสที่ 2: เพิ่งสมัครเข้ามาและรอแอดมินอนุมัติตามปกติ
       return res.status(403).json({
         error: 'บัญชีของคุณอยู่ระหว่างรอการอนุมัติจากผู้ดูแลระบบ กรุณารอตรวจสอบครับ'
       });
