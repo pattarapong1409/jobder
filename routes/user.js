@@ -580,53 +580,6 @@ router.get('/api/application/:id', async (req, res) => {
   }
 });
 
-// 🔔 ดึงแจ้งเตือนฝั่งพนักงาน (แก้ไขเพื่อดึงค่า interest เรียบร้อยแล้ว 🛠️)
-router.get('/notifications/member/:memberId', async (req, res) => {
-  const { memberId } = req.params;
-
-  try {
-    const { data, error } = await supabase
-      .from('notification')
-      .select(`
-        *,
-        jobpost:job_id (
-          job_id,
-          title,
-          company_id,
-          company:company_id (
-            company_id,
-            namecompany,
-            company_logo
-          )
-        )
-      `)
-      .eq('member_id', memberId)
-      .in('noti_type', ['job_match', 'application', 'interest']) // 👈 เพิ่ม 'interest' เข้ามาระบบเพื่อไม่ให้โดนกรองทิ้ง!
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-
-    const uniqueMap = new Map();
-
-    for (const noti of data || []) {
-      const key = `${noti.member_id}_${noti.job_id}_${noti.post_id}_${noti.app_id}_${noti.noti_type}`;
-
-      if (!uniqueMap.has(key)) {
-        uniqueMap.set(key, {
-          ...noti,
-          member_is_read: noti.member_is_read ?? noti.is_read ?? false,
-          company_is_read: noti.company_is_read ?? false,
-        });
-      }
-    }
-
-    res.json(Array.from(uniqueMap.values()));
-  } catch (err) {
-    console.error('❌ Fetch Member Notifications Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ดึงข้อมูลโปรไฟล์ Member
 router.get('/user/:id', async (req, res) => {
   const userId = parseInt(req.params.id, 10);
@@ -670,6 +623,58 @@ router.get('/user/:id', async (req, res) => {
   }
 });
 
+// ============================================================================
+// 🔔 1. เส้นดึงแจ้งเตือนฝั่งพนักงาน (กรองเฉพาะอันที่พนักงานควรเห็น)
+// ============================================================================
+router.get('/notifications/member/:memberId', async (req, res) => {
+  const { memberId } = req.params;
+
+  try {
+    const { data, error } = await supabase
+      .from('notification')
+      .select(`
+        *,
+        jobpost:job_id (
+          job_id,
+          title,
+          company_id,
+          company:company_id (
+            company_id,
+            namecompany,
+            company_logo
+          )
+        )
+      `)
+      .eq('member_id', memberId)
+      .in('noti_type', ['job_match', 'application', 'interest']) 
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    const uniqueMap = new Map();
+
+    for (const noti of data || []) {
+      const key = `${noti.member_id}_${noti.job_id}_${noti.post_id}_${noti.app_id}_${noti.noti_type}`;
+
+      if (!uniqueMap.has(key)) {
+        uniqueMap.set(key, {
+          ...noti,
+          member_is_read: noti.member_is_read ?? noti.is_read ?? false,
+          company_is_read: noti.company_is_read ?? false,
+        });
+      }
+    }
+
+    res.json(Array.from(uniqueMap.values()));
+  } catch (err) {
+    console.error('❌ Fetch Member Notifications Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// 📊 2. เส้นนับแจ้งเตือนที่ยังไม่ได้อ่าน (แก้ไขให้ครอบคลุมทุกประเภทของ Member)
+// ============================================================================
 router.get('/api/notifications/member/:memberId/unread-count', async (req, res) => {
   const { memberId } = req.params;
 
@@ -678,7 +683,7 @@ router.get('/api/notifications/member/:memberId/unread-count', async (req, res) 
       .from('notification')
       .select('*', { count: 'exact', head: true })
       .eq('member_id', memberId)
-      .eq('noti_type', 'job_match')
+      .in('noti_type', ['job_match', 'application', 'interest']) // 🎯 แก้ไข: นับรวมทั้ง Match, สมัครงาน และสนใจงาน
       .eq('member_is_read', false);
 
     if (error) throw error;
@@ -689,29 +694,18 @@ router.get('/api/notifications/member/:memberId/unread-count', async (req, res) 
   }
 });
 
-// ✅ พนักงานกดอ่านแจ้งเตือน
+// ============================================================================
+// ✅ 3. พนักงานกดอ่านแจ้งเตือน (แก้ไขให้อ่านเฉพาะ ID นั้นๆ ไม่เหมารวมประเภท)
+// ============================================================================
 router.put('/api/notifications/member/read/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const { data: noti, error: findError } = await supabase
-      .from('notification')
-      .select('member_id, job_id, post_id, noti_type')
-      .eq('noti_id', id)
-      .single();
-
-    if (findError) throw findError;
-
-    let query = supabase
+    // 🎯 แก้ไข: อัปเดต member_is_read เป็น true เฉพาะแจ้งเตือนไอดีที่เรากดเปิดอ่านเท่านั้น
+    const { error } = await supabase
       .from('notification')
       .update({ member_is_read: true })
-      .eq('member_id', noti.member_id)
-      .eq('noti_type', noti.noti_type);
-
-    if (noti.job_id) query = query.eq('job_id', noti.job_id);
-    if (noti.post_id) query = query.eq('post_id', noti.post_id);
-
-    const { error } = await query;
+      .eq('noti_id', id);
 
     if (error) throw error;
 
@@ -724,10 +718,10 @@ router.put('/api/notifications/member/read/:id', async (req, res) => {
 
 
 // ============================================================================
-// ❤️ API สำหรับกด "สนใจงาน" (เด้งแจ้งเตือนทั้งบริษัท และ ตัวผู้ใช้เอง)
+// ❤️ API สำหรับกด "สนใจงาน" (เวอร์ชันแก้ไขตามโครงสร้างตารางจริง)
 // ============================================================================
 router.post('/api/jobs/interest', async (req, res) => {
-  const { member_id, job_id, company_id, title } = req.body;
+  const { member_id, job_id, company_id, title, member_name } = req.body;
 
   if (!member_id || !job_id || !company_id) {
     return res.status(400).json({ error: 'ข้อมูลไม่ครบถ้วน' });
@@ -750,8 +744,9 @@ router.post('/api/jobs/interest', async (req, res) => {
       });
     }
 
-    // ข้อความกลางที่จะแสดงในระบบแจ้งเตือน
-    const notiMessage = `คุณสนใจตำแหน่งงาน "${title || 'ประกาศงาน'}" เรียบร้อยแล้ว (ระบบส่งข้อมูลแจ้งไปยังบริษัทแล้ว)`;
+    // 🏢 ข้อความสำหรับฝั่งบริษัท (เซฟลงตาราง notification คอลัมน์ message)
+    const nameToShow = member_name || 'มีผู้ใช้งาน';
+    const companyMessage = `${nameToShow} แสดงความสนใจในตำแหน่งงาน "${title || 'ประกาศงาน'}" ของคุณ`;
     
     const { data, error } = await supabase
       .from('notification')
@@ -761,10 +756,10 @@ router.post('/api/jobs/interest', async (req, res) => {
           member_id: member_id,
           job_id: job_id,
           noti_type: 'interest',
-          message: notiMessage,
-          is_read: false,           // สถานะรวม
-          company_is_read: false,   // 🔔 เด้งไปหน้าแจ้งเตือนของบริษัท
-          member_is_read: false     // 🔔 เด้งกลับมาหน้าแจ้งเตือนของเราด้วย!
+          message: companyMessage, // 👈 บันทึกข้อความฝั่งบริษัทลงคอลัมน์ message ที่มีอยู่จริง
+          is_read: false,          
+          company_is_read: false,   
+          member_is_read: false    
         }
       ])
       .select();
@@ -782,6 +777,5 @@ router.post('/api/jobs/interest', async (req, res) => {
     return res.status(500).json({ error: 'เกิดข้อผิดพลาดในการส่งความสนใจ' });
   }
 });
-
 
 module.exports = router;

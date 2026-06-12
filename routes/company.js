@@ -362,6 +362,9 @@ router.get('/api/notifications/company/:companyId', async (req, res) => {
             resume
           )
         ),
+        jobpost:job_id (
+          title
+        ),
         application:app_id (
           app_id,
           job_id,
@@ -379,35 +382,39 @@ router.get('/api/notifications/company/:companyId', async (req, res) => {
 
     if (error) throw error;
 
-    const result = data.map(noti => ({
-      ...noti,
+    const result = data.map(noti => {
+      // ดึงชื่องานจากระบบความสัมพันธ์อย่างเป็นระบบ
+      let finalJobTitle = noti.jobpost?.title || noti.application?.jobpost?.title || '';
 
-      member_name: noti.member?.users?.fullname || 'ผู้สมัครงาน',
-      poster_name: noti.member?.users?.fullname || 'ผู้สมัครงาน',
+      // แผนสำรอง: ถ้าไม่มี Relation ผูกไว้ ให้แกะชื่องานที่อยู่ในเครื่องหมายคำพูด "" จากข้อความดิบ (Message)
+      if (!finalJobTitle && noti.message && noti.message.includes('"')) {
+        const matches = noti.message.match(/"([^"]+)"/);
+        if (matches && matches[1]) {
+          finalJobTitle = matches[1];
+        }
+      }
 
-      poster_email: noti.member?.users?.email || '-',
-      email: noti.member?.users?.email || '-',
+      // ปรับปรุงการล้างคำว่า "ตำแหน่งงาน" ออกตั้งแต่ฝั่ง Backend เพื่อความแม่นยำ
+      if (finalJobTitle) {
+        finalJobTitle = finalJobTitle.replace(/^ตำแหน่งงาน/, '').replace(/^ตำแหน่ง/, '').trim();
+      }
 
-      poster_phone: noti.member?.users?.phone || '-',
-      phone: noti.member?.users?.phone || '-',
-
-      image_url: noti.member?.users?.profile_image || '',
-      profile_image: noti.member?.users?.profile_image || '',
-
-      resume: noti.member?.users?.resume || '',
-      resume_url: noti.member?.users?.resume || '',
-
-      cover_letter:
-        noti.application?.cover_letter ||
-        noti.message ||
-
-        '',
-
-      job_title:
-        noti.application?.jobpost?.title ||
-        noti.jobpost?.title ||
-        'ตำแหน่งงาน',
-    }));
+      return {
+        ...noti,
+        member_name: noti.member?.users?.fullname || 'ผู้สมัครงาน',
+        poster_name: noti.member?.users?.fullname || 'ผู้สมัครงาน',
+        poster_email: noti.member?.users?.email || '-',
+        email: noti.member?.users?.email || '-',
+        poster_phone: noti.member?.users?.phone || '-',
+        phone: noti.member?.users?.phone || '-',
+        image_url: noti.member?.users?.profile_image || '',
+        profile_image: noti.member?.users?.profile_image || '',
+        resume: noti.member?.users?.resume || '',
+        resume_url: noti.member?.users?.resume || '',
+        cover_letter: noti.application?.cover_letter || noti.message || '',
+        job_title: finalJobTitle || 'งานทั่วไป' 
+      };
+    });
 
     res.status(200).json(result);
   } catch (err) {

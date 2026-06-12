@@ -441,6 +441,10 @@ router.patch('/admin/users/unsuspend/:userId', async (req, res) => {
 // ผู้ใช้ทั้งหมด
 // GET /admin/users/all
 // ================================
+// ================================
+// ผู้ใช้ทั้งหมด (ยกเว้น Superadmin id: 35)
+// GET /admin/users/all
+// ================================
 router.get('/admin/users/all', async (req, res) => {
   try {
 
@@ -456,6 +460,7 @@ router.get('/admin/users/all', async (req, res) => {
         suspend_until,
         suspend_reason
       `)
+      .neq('user_id', 35) // 🚨 เพิ่มบรรทัดนี้: กรองไม่ให้ดึง user_id ที่เท่ากับ 35 ออกมา
       .order('user_id', { ascending: false });
 
     if (error) throw error;
@@ -470,7 +475,6 @@ router.get('/admin/users/all', async (req, res) => {
     });
   }
 });
-
 
 
 module.exports = router;
