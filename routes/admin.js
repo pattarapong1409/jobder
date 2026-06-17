@@ -69,23 +69,19 @@ router.patch('/admin/users/approve/:id', async (req, res) => {
 });
 
 // ==========================================
-// 3. API สำหรับปฏิเสธผู้ใช้งาน (เปลี่ยนจากลบเป็นการบันทึกสถานะปฏิเสธ)
+// 3. API สำหรับปฏิเสธและลบ User ทิ้ง (DELETE)
 // ==========================================
-router.put('/admin/users/reject/:id', async (req, res) => {
+router.delete('/admin/users/reject/:id', async (req, res) => {
   const userId = parseInt(req.params.id, 10);
   if (isNaN(userId)) return res.status(400).json({ error: 'ID ไม่ถูกต้อง' });
 
   try {
-    // 📝 เปลี่ยนจาก .delete() เป็น .update()
-    // ตั้งค่า memberapproved = false และ status = false เพื่อระบุว่าถูกปฏิเสธ/ระงับการใช้งาน
+    // สั่งลบข้อมูลออกจากตาราง users
     const { data, error } = await supabase
       .from('users')
-      .update({ 
-        memberapproved: false, 
-        status: false // เราใช้ status: false ร่วมกับ memberapproved: false เป็นสัญลักษณ์ว่า "ถูกปฏิเสธ"
-      })
+      .delete()
       .eq('user_id', userId)
-      .select('email, fullname');
+      .select('email'); // ดึงอีเมลกลับมาเช็คว่าลบสำเร็จ
 
     if (error) throw error;
     
@@ -93,7 +89,7 @@ router.put('/admin/users/reject/:id', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบผู้ใช้งานนี้ในระบบ' });
     }
 
-    res.json({ message: 'ปฏิเสธคำขอและระงับสิทธิ์ผู้ใช้งานนี้เรียบร้อยแล้ว', user: data[0] });
+    res.json({ message: 'ปฏิเสธและลบผู้ใช้งานสำเร็จ', user: data[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -441,10 +437,6 @@ router.patch('/admin/users/unsuspend/:userId', async (req, res) => {
 // ผู้ใช้ทั้งหมด
 // GET /admin/users/all
 // ================================
-// ================================
-// ผู้ใช้ทั้งหมด (ยกเว้น Superadmin id: 35)
-// GET /admin/users/all
-// ================================
 router.get('/admin/users/all', async (req, res) => {
   try {
 
@@ -460,7 +452,6 @@ router.get('/admin/users/all', async (req, res) => {
         suspend_until,
         suspend_reason
       `)
-      .neq('user_id', 35) // 🚨 เพิ่มบรรทัดนี้: กรองไม่ให้ดึง user_id ที่เท่ากับ 35 ออกมา
       .order('user_id', { ascending: false });
 
     if (error) throw error;
@@ -473,6 +464,137 @@ router.get('/admin/users/all', async (req, res) => {
     res.status(500).json({
       error: err.message
     });
+  }
+});
+
+// ดึงใบสมัครทั้งหมดให้แอดมินติดตามสถานะ
+router.get('/admin/applications', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('application')
+      .select(`
+        *,
+        jobpost:job_id (
+          job_id,
+          title,
+          company:company_id (
+            company_id,
+            namecompany,
+            company_logo
+          )
+        ),
+        member:member_id (
+          member_id,
+          users:user_id (
+            fullname,
+            email,
+            phone,
+            profile_image
+          )
+        )
+      `)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    const result = (data || []).map(app => ({
+      ...app,
+      member_name: app.member?.users?.fullname || 'ผู้สมัครงาน',
+      member_email: app.member?.users?.email || '-',
+      member_phone: app.member?.users?.phone || '-',
+      member_image: app.member?.users?.profile_image || '',
+      job_title: app.jobpost?.title || '-',
+      company_name: app.jobpost?.company?.namecompany || '-',
+      company_logo: app.jobpost?.company?.company_logo || '',
+    }));
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ดึงโปรโมชั่นทั้งหมด
+router.get('/admin/promotions', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('promotion')
+      .select(`
+        *,
+        jobpost:job_id (
+          job_id,
+          title,
+          province,
+          salary,
+          company:company_id (
+            namecompany,
+            company_logo
+          )
+        )
+      `)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// เพิ่มโปรโมชั่น / ประกาศพิเศษ
+router.post('/admin/promotions', async (req, res) => {
+  try {
+    const { job_id, promotion_type, title, description } = req.body;
+
+    if (!job_id || !promotion_type) {
+      return res.status(400).json({
+        success: false,
+        error: 'กรุณาส่ง job_id และ promotion_type'
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('promotion')
+      .insert([{
+        job_id: parseInt(job_id),
+        promotion_type,
+        title: title || '',
+        description: description || ''
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.status(201).json({
+      success: true,
+      message: 'เพิ่มโปรโมชั่นสำเร็จ',
+      promotion: data
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ลบโปรโมชั่น
+router.delete('/admin/promotions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from('promotion')
+      .delete()
+      .eq('promotion_id', id);
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      message: 'ลบโปรโมชั่นสำเร็จ'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

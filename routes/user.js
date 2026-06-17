@@ -7,7 +7,7 @@ const supabase = require('../db');
 // 🏢 PART 1: JOB & COMPANY
 // =====================================================
 
-// ดึงโพสต์งานทั้งหมด
+// ดึงโพสต์งานทั้งหมด (แก้ใหม่)
 router.get('/jobposts', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -18,22 +18,49 @@ router.get('/jobposts', async (req, res) => {
           company_id,
           namecompany,
           company_logo
+        ),
+        promotion (
+          promotion_id,
+          promotion_type,
+          title,
+          description,
+          created_at
         )
       `)
       .order('created_at', { ascending: false });
 
     if (error) return res.status(400).json({ error: error.message });
 
-    const result = data.map(post => ({
-      ...post,
-      display_name: post.company?.namecompany || 'บริษัท',
-      image_url: post.company?.company_logo || ''
-    }));
+    const result = (data || []).map(post => {
+      const promotions = post.promotion || [];
+      const firstPromotion = promotions.length > 0 ? promotions[0] : null;
+
+      return {
+        ...post,
+        display_name: post.company?.namecompany || 'บริษัท',
+        image_url: post.company?.company_logo || '',
+
+        promotions,
+        is_promoted: promotions.length > 0,
+        promotion_type: firstPromotion?.promotion_type || null,
+        promotion_title: firstPromotion?.title || null,
+        promotion_description: firstPromotion?.description || null,
+      };
+    });
+
+    // ให้โพสต์ที่มีโปรโมชั่นขึ้นบนสุด
+    result.sort((a, b) => {
+      if (a.is_promoted && !b.is_promoted) return -1;
+      if (!a.is_promoted && b.is_promoted) return 1;
+      return 0;
+    });
 
     res.json(result);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'เกิดข้อผิดพลาดในการดึงข้อมูล jobpost' });
+    res.status(500).json({
+      error: 'เกิดข้อผิดพลาดในการดึงข้อมูล jobpost'
+    });
   }
 });
 
