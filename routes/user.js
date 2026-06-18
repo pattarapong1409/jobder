@@ -300,13 +300,15 @@ router.get('/userposts/:id', async (req, res) => {
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 
+
 // แก้ไขข้อมูล User Profile
 router.put('/user/:id', upload.fields([
   { name: 'profileImage', maxCount: 1 },
   { name: 'resumeFile', maxCount: 1 }
 ]), async (req, res) => {
   const userId = parseInt(req.params.id, 10);
-  const { fullname, phone, address, skill } = req.body;
+  // 1. รับค่า bio (วุฒิการศึกษา) เพิ่มเติมจาก req.body
+  const { fullname, phone, address, skill, bio } = req.body;
 
   if (isNaN(userId)) {
     return res.status(400).json({ error: 'ID ไม่ถูกต้อง' });
@@ -380,9 +382,13 @@ router.put('/user/:id', upload.fields([
 
     if (updateUsers.error) throw updateUsers.error;
 
+    // 2. อัปเดตทั้ง skill และ bio (วุฒิการศึกษา) ลงในตาราง member พร้อมกัน
     const updateMember = await supabase
       .from('member')
-      .update({ skill })
+      .update({ 
+        skill, 
+        bio // บันทึกข้อมูลวุฒิการศึกษาลงคอลัมน์ bio
+      })
       .eq('user_id', userId);
 
     if (updateMember.error) throw updateMember.error;
@@ -626,13 +632,18 @@ router.get('/user/:id', async (req, res) => {
           phone,
           address,
           profile_image
-        ),
-        membereducation(*)
-      `)
+        )
+      `) // 💡 ถอด membereducation(*) ออกไปแล้ว เพราะย้ายมาใช้ bio ในตาราง member แทน
       .eq('user_id', userId)
       .single();
 
     if (error) throw error;
+
+    // 💡 เตรียมชุดข้อมูลวุฒิการศึกษาจำลอง เพื่อส่งกลับไปให้ Flutter ทำงานร่วมกับโค้ดเดิมได้
+    // โดยการนำค่าข้อความจากคอลัมน์ data.bio มาครอบให้อยู่ในโครงสร้างแบบที่แอป Flutter แกะข้อมูลรอไว้
+    const formattedEducation = data.bio 
+      ? [{ degree: data.bio, major: '', university: '' }] 
+      : [];
 
     res.json({
       ...data,
@@ -642,7 +653,9 @@ router.get('/user/:id', async (req, res) => {
       address: data.users?.address || '',
       profile_image: data.users?.profile_image || '',
       image_url: data.users?.profile_image || '',
-      education_list: data.membereducation || [],
+      
+      // 🎯 ส่งก้อนที่แปลงมาจากข้อความใน bio ไปแทนที่ตารางเดิม เพื่อไม่ให้ฝั่ง Flutter เกิด Error
+      education_list: formattedEducation, 
     });
   } catch (err) {
     console.error('Fetch user profile error:', err.message);
@@ -655,7 +668,6 @@ router.get('/user/:id', async (req, res) => {
 // ============================================================================
 router.get('/notifications/member/:memberId', async (req, res) => {
   const { memberId } = req.params;
-
   try {
     const { data, error } = await supabase
       .from('notification')
@@ -673,7 +685,8 @@ router.get('/notifications/member/:memberId', async (req, res) => {
         )
       `)
       .eq('member_id', memberId)
-      .in('noti_type', ['job_match', 'application', 'interest']) 
+      // 🎯 แก้ไข: เพิ่ม 'application_status' เข้าไปในอาเรย์ดักกรอง
+      .in('noti_type', ['job_match', 'application', 'interest', 'application_status']) 
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -706,17 +719,54 @@ router.get('/api/notifications/member/:memberId/unread-count', async (req, res) 
   const { memberId } = req.params;
 
   try {
-    const { count, error } = await supabase
+    // 1. 🟢 ยึดโค้ดเดิมของคุณเป็นหลัก: ดึงข้อมูลแจ้งเตือนทั้งหมดของสมาชิกคนนี้ที่ยังไม่ได้อ่าน
+    const { data: rawNotifications, error } = await supabase
       .from('notification')
-      .select('*', { count: 'exact', head: true })
+      .select('noti_id, noti_type, job_id, app_id, post_id, member_is_read, created_at')
       .eq('member_id', memberId)
-      .in('noti_type', ['job_match', 'application', 'interest']) // 🎯 แก้ไข: นับรวมทั้ง Match, สมัครงาน และสนใจงาน
-      .eq('member_is_read', false);
+      .eq('member_is_read', false); // เอาเฉพาะที่ยังไม่ได้อ่านจริง ๆ
 
     if (error) throw error;
 
-    res.json({ count: count || 0 });
+    // 2. 🎯 ส่วนเสริม: ทำการกรองตัดแถวซ้ำออกด้วยตรรกะเดียวกับหน้าจอแอป ก่อนเริ่มนับจำนวน
+    const uniqueMap = new Map();
+
+    if (rawNotifications && rawNotifications.length > 0) {
+      for (const noti of rawNotifications) {
+        const type = noti.noti_type || '';
+        const jobId = noti.job_id || '';
+        const appId = noti.app_id || '';
+
+        // ถ้าเข้าเงื่อนไขแจ้งเตือนกลุ่มที่มีตัวซ้ำ
+        if (type === 'job_match' || type === 'interest' || type === 'application_status') {
+          // สร้าง Key สำหรับตรวจสอบตัวซ้ำ
+          const key = `${type}_${jobId}_${appId}`;
+          
+          if (!uniqueMap.has(key)) {
+            uniqueMap.set(key, noti);
+          } else {
+            // ถ้าซ้ำ ให้เอาตัวที่เวลาล่าสุดกว่าเก็บไว้
+            const currentDateTime = new Date(noti.created_at || 0);
+            const existingDateTime = new Date(uniqueMap.get(key).created_at || 0);
+            if (currentDateTime > existingDateTime) {
+              uniqueMap.set(key, noti);
+            }
+          }
+        } else {
+          // สำหรับประเภทอื่น ๆ ที่ไม่เข้าข่ายซ้ำ ให้เก็บไอดีแยกเป็นเอกเทศไว้เลย
+          uniqueMap.set(`other_${noti.noti_id}`, noti);
+        }
+      }
+    }
+
+    // 3. คำนวณจำนวนที่เหลือจากการคัดกรองตัวซ้ำแล้ว
+    const finalCount = uniqueMap.size;
+
+    // ส่งจำนวนยอดสุทธิกลับไปให้ฝั่งแอป
+    res.json({ count: finalCount });
+
   } catch (err) {
+    console.error('❌ Get Unread Count Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -724,28 +774,46 @@ router.get('/api/notifications/member/:memberId/unread-count', async (req, res) 
 // ============================================================================
 // ✅ 3. พนักงานกดอ่านแจ้งเตือน (แก้ไขให้อ่านเฉพาะ ID นั้นๆ ไม่เหมารวมประเภท)
 // ============================================================================
+// ============================================================================
+// ✅ พนักงานกดอ่านแจ้งเตือน (ใช้ตรรกะเดิม: เคลียร์ตัวซ้ำที่มี job_id เดียวกันเพื่อให้เลขไอคอนด้านล่างลดลง)
+// ============================================================================
 router.put('/api/notifications/member/read/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 🎯 แก้ไข: อัปเดต member_is_read เป็น true เฉพาะแจ้งเตือนไอดีที่เรากดเปิดอ่านเท่านั้น
-    const { error } = await supabase
+    // 1. ค้นหาข้อมูลกลุ่มก้อนของแจ้งเตือนไอดีนี้ก่อน
+    const { data: noti, error: findError } = await supabase
+      .from('notification')
+      .select('member_id, job_id, post_id, noti_type')
+      .eq('noti_id', id)
+      .single();
+
+    if (findError) throw findError;
+
+    // 2. สั่งอัปเดต member_is_read = true ให้กับแจ้งเตือนประเภทเดียวกันของสมาชิกคนนี้
+    let query = supabase
       .from('notification')
       .update({ member_is_read: true })
-      .eq('noti_id', id);
+      .eq('member_id', noti.member_id)
+      .eq('noti_type', noti.noti_type);
 
+    // 3. ถ้าผูกกับ job_id หรือ post_id ให้เคลียร์ตัวซ้ำที่ผูกกับ id ชุดนี้ออกให้หมด (ตัวเลขด้านล่างจะได้ลดลงตรงกัน)
+    if (noti.job_id) query = query.eq('job_id', noti.job_id);
+    if (noti.post_id) query = query.eq('post_id', noti.post_id);
+
+    const { error } = await query;
     if (error) throw error;
 
-    res.json({ success: true });
+    return res.status(200).json({ success: true, message: 'อัปเดตสถานะการอ่านเรียบร้อยแล้ว' });
   } catch (err) {
     console.error('❌ Member Read Notification Error:', err.message);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
 
 // ============================================================================
-// ❤️ API สำหรับกด "สนใจงาน" (เวอร์ชันแก้ไขตามโครงสร้างตารางจริง)
+// ❤️ API สำหรับกด "สนใจงาน" / "ยกเลิกสนใจ" (Toggle Version) - ปรับปรุงข้อความใหม่
 // ============================================================================
 router.post('/api/jobs/interest', async (req, res) => {
   const { member_id, job_id, company_id, title, member_name } = req.body;
@@ -755,38 +823,66 @@ router.post('/api/jobs/interest', async (req, res) => {
   }
 
   try {
-    // ตรวจสอบความซ้ำซ้อน
-    const { data: existingNoti } = await supabase
+    // 1. ตรวจสอบดูว่าเคยบันทึกความสนใจของคู่นี้ไว้แล้วหรือไม่
+    const { data: existingNotis } = await supabase
       .from('notification')
       .select('noti_id')
       .eq('member_id', member_id)
       .eq('job_id', job_id)
-      .eq('noti_type', 'interest')
-      .maybeSingle();
+      .eq('company_id', company_id)
+      .eq('noti_type', 'interest');
 
-    if (existingNoti) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'คุณได้ส่งความสนใจให้งานนี้ไปเรียบร้อยแล้ว' 
+    // 2. 🟥 เคสที่ 1: มีข้อมูลอยู่แล้ว -> ทำการ "ยกเลิกสนใจ" (ลบแจ้งเตือนที่เกี่ยวข้องออกทั้งหมด)
+    if (existingNotis && existingNotis.length > 0) {
+      // ดึงลิสต์ ID ทั้งหมดที่เจอเพื่อลบออกพร้อมกันทีเดียว (เคลียร์ทั้งแถวฝั่ง User และ Company)
+      const notiIdsToDelete = existingNotis.map(n => n.noti_id);
+
+      const { error: deleteError } = await supabase
+        .from('notification')
+        .delete()
+        .in('noti_id', notiIdsToDelete);
+
+      if (deleteError) throw deleteError;
+
+      return res.json({ 
+        success: true, 
+        isInterested: false, // 👈 ส่งบอก Flutter ว่าเลิกสนใจแล้วนะ
+        message: 'ยกเลิกความสนใจและลบการแจ้งเตือนเรียบร้อยแล้ว' 
       });
     }
 
-    // 🏢 ข้อความสำหรับฝั่งบริษัท (เซฟลงตาราง notification คอลัมน์ message)
+    // 3. 🟩 เคสที่ 2: ยังไม่มีข้อมูล -> ทำการ "บันทึกความสนใจ" (สร้างข้อมูลใหม่แยก 2 ฝั่ง)
     const nameToShow = member_name || 'มีผู้ใช้งาน';
-    const companyMessage = `${nameToShow} แสดงความสนใจในตำแหน่งงาน "${title || 'ประกาศงาน'}" ของคุณ`;
+    const jobTitle = title || 'ประกาศงาน';
+    
+    // 🎯 ปรับแต่งข้อความใหม่ตามที่คุณต้องการสำหรับฝั่ง User และ Company
+    const userMessage = `ยินดีด้วย คุณ ${nameToShow} ได้สนใจงานนี้แล้ว (${jobTitle})`;
+    const companyMessage = `${nameToShow} แสดงความสนใจในตำแหน่งงาน "${jobTitle}" ของคุณ`;
     
     const { data, error } = await supabase
       .from('notification')
       .insert([
         {
+          // แถวที่ 1: สำหรับส่งให้ฝั่ง User (ผู้สมัครงาน)
           company_id: company_id,
           member_id: member_id,
           job_id: job_id,
           noti_type: 'interest',
-          message: companyMessage, // 👈 บันทึกข้อความฝั่งบริษัทลงคอลัมน์ message ที่มีอยู่จริง
+          message: userMessage,         // 👈 ใช้ข้อความที่คุณขอมา
           is_read: false,          
-          company_is_read: false,   
-          member_is_read: false    
+          company_is_read: true,        // ฝั่งบริษัทแถวนี้ไม่ต้องตรวจ
+          member_is_read: false         // เด้งจุดสีแจ้งเตือนที่ฝั่ง User
+        },
+        {
+          // แถวที่ 2: สำหรับส่งให้ฝั่ง Company (บริษัท)
+          company_id: company_id,
+          member_id: member_id,
+          job_id: job_id,
+          noti_type: 'interest',
+          message: companyMessage,      // 👈 ใช้ข้อความแบบเดิมที่บริษัทอ่านไม่งง
+          is_read: false,          
+          company_is_read: false,       // เด้งจุดสีแจ้งเตือนที่ฝั่ง บริษัท
+          member_is_read: true          // User แถวนี้อ่านแล้วเพราะเป็นคนกดเอง
         }
       ])
       .select();
@@ -795,13 +891,14 @@ router.post('/api/jobs/interest', async (req, res) => {
 
     return res.json({
       success: true,
+      isInterested: true, // 👈 ส่งบอก Flutter ว่ากดสนใจสำเร็จแล้วนะ
       message: 'บันทึกความสนใจและส่งแจ้งเตือนเรียบร้อย!',
-      data: data[0]
+      data: data[0] // ส่งข้อมูลแถวแรกกลับไปให้แอปใช้
     });
 
   } catch (err) {
     console.error("❌ Error:", err);
-    return res.status(500).json({ error: 'เกิดข้อผิดพลาดในการส่งความสนใจ' });
+    return res.status(500).json({ error: 'เกิดข้อผิดพลาดในการประมวลผลความสนใจ' });
   }
 });
 

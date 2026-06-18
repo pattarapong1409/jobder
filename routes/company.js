@@ -443,7 +443,7 @@ router.put('/api/notifications/member/read/:id', async (req, res) => {
 });
 
 
-// อัปเดตสถานะใบสมัคร
+// อัปเดตสถานะใบสมัคร และส่งแจ้งเตือนหา User ในทุกๆ แอ็กชัน (approved, rejected, hired)
 router.put('/api/application/status/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -467,8 +467,9 @@ router.put('/api/application/status/:id', async (req, res) => {
       });
     }
 
+    const currentStatus = status.toLowerCase();
     const updateData = {
-      status
+      status: currentStatus
     };
 
     if (interview_date || interviewDate) {
@@ -479,24 +480,81 @@ router.put('/api/application/status/:id', async (req, res) => {
       updateData.contact_method = contact_method || contactMethod;
     }
 
-    if (company_message || companyMessage || note || message) {
-      updateData.company_message =
-        company_message || companyMessage || note || message;
+    // รวมข้อความบันทึกบันทึกเพิ่มเติมลงในฐานข้อมูล
+    const incomingMessage = company_message || companyMessage || note || message;
+    if (incomingMessage) {
+      updateData.company_message = incomingMessage;
     }
 
-    const { data, error } = await supabase
+    // 1. อัปเดตสถานะใบสมัครในตาราง application และดึงรายละเอียดงานเพื่อไปใช้ทำแจ้งเตือน
+    const { data: appData, error: appError } = await supabase
       .from('application')
       .update(updateData)
       .eq('app_id', id)
-      .select('*')
+      .select('*, jobpost(title, company_id)')
       .single();
 
-    if (error) throw error;
+    if (appError) throw appError;
+
+    // ==========================================================
+    // 🔔 2. บันทึกและส่งแจ้งเตือนหา User ตามแอ็กชันที่บริษัทเลือก
+    // ==========================================================
+    try {
+      const jobTitle = appData.jobpost?.title || 'ตำแหน่งงานที่คุณสมัคร';
+      const companyId = appData.jobpost?.company_id ? parseInt(appData.jobpost.company_id) : null;
+      
+      let notiMessage = '';
+
+      // เช็กเงื่อนไขของคำอธิบายเพื่อแยกแยะระหว่าง "ปฏิเสธตั้งแต่แรก" กับ "ไม่รับหลังสัมภาษณ์"
+      const isAfterInterview = incomingMessage && incomingMessage.includes('สัมภาษณ์');
+
+      if (currentStatus === 'approved') {
+        // [แอ็กชัน: เรียกสัมภาษณ์]
+        const dateStr = interview_date || interviewDate || 'ยังไม่ระบุเวลา';
+        const methodStr = contact_method || contactMethod || 'ยังไม่ระบุช่องทาง';
+        notiMessage = `📅 บริษัทได้นัดหมายสัมภาษณ์งานตำแหน่ง "${jobTitle}" วันที่: ${dateStr} ช่องทาง: ${methodStr}`;
+      } else if (currentStatus === 'hired') {
+        // [แอ็กชัน: รับเข้าทำงาน]
+        notiMessage = `🎉 ยินดีด้วย! บริษัทได้พิจารณารับคุณเข้าทำงานในตำแหน่ง "${jobTitle}" เรียบร้อยแล้ว`;
+      } else if (currentStatus === 'rejected') {
+        if (isAfterInterview) {
+          // [แอ็กชัน: ไม่รับเข้าทำงาน หลังสัมภาษณ์แล้ว]
+          notiMessage = `📂 บริษัทได้แจ้งผลการสัมภาษณ์งานในตำแหน่ง "${jobTitle}" (ไม่ผ่านการพิจารณารับเข้าทำงาน)`;
+        } else {
+          // [แอ็กชัน: ไม่เรียกสัมภาษณ์ ปฏิเสธใบสมัครแต่แรก]
+          notiMessage = `📂 บริษัทได้พิจารณาใบสมัครงานในตำแหน่ง "${jobTitle}" ของคุณแล้ว (ปฏิเสธใบสมัคร)`;
+        }
+      } else {
+        notiMessage = `ใบสมัครของคุณในตำแหน่ง "${jobTitle}" มีการเปลี่ยนสถานะเป็น: ${status}`;
+      }
+
+      // บันทึกลงตาราง notification เพื่อให้ฝั่ง User ได้รับแจ้งเตือนทันที
+      await supabase
+        .from('notification')
+        .insert([
+          {
+            company_id: companyId,
+            member_id: appData.member_id,
+            app_id: parseInt(id),
+            job_id: appData.job_id,
+            noti_type: 'application_status',
+            message: notiMessage,
+            is_read: false,
+            member_is_read: false, // ปรับให้ฝั่งผู้สมัครขึ้นจุดแดงเด้งแจ้งเตือนใหม่
+            company_is_read: true   // ฝั่งบริษัทส่งเอง ถือว่าอ่านแล้ว
+          }
+        ]);
+        
+      console.log(`🔔 บันทึกการแจ้งเตือนสำเร็จสำหรับสถานะ: [${currentStatus}]`);
+    } catch (notiErr) {
+      console.error('❌ ระบบส่งแจ้งเตือนขัดข้อง แต่สถานะอัปเดตแล้ว:', notiErr.message);
+    }
+    // ==========================================================
 
     res.status(200).json({
       success: true,
-      message: 'อัปเดตสถานะใบสมัครสำเร็จ',
-      application: data
+      message: 'อัปเดตสถานะและส่งแจ้งเตือนไปยังผู้สมัครแล้ว',
+      application: appData
     });
   } catch (err) {
     console.error('❌ Update Application Status Error:', err.message);

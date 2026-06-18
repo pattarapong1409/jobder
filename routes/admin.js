@@ -39,31 +39,57 @@ router.get('/admin/users/pending', async (req, res) => {
   }
 });
 
-//แก้ไขสิทธิ์
 // PATCH /admin/users/approve/:id
 router.patch('/admin/users/approve/:id', async (req, res) => {
-  const userId = parseInt(req.params.id, 10);
-  if (isNaN(userId)) return res.status(400).json({ error: 'ID ไม่ถูกต้อง' });
+  const incomingId = req.params.id; // รับค่า ID จาก Flutter โดยไม่ใช้ parseInt
 
   try {
-    // อัปเดต memberapproved ให้เป็น true
-    // (ถ้าต้องเปลี่ยน status เป็น true ด้วย ก็ใส่เพิ่มใน object เดียวกันได้เลย)
-    const { data, error } = await supabase
+    // 💡 1. อัปเดตตาราง users เพื่อเปิดสิทธิ์ใช้งาน
+    const { data: userData, error: userError } = await supabase
       .from('users')
       .update({ 
         memberapproved: true,
-        status: true // ถ้า status หมายถึงการเปิดใช้งานบัญชี ก็อัปเดตพร้อมกันได้เลย
+        status: true 
       })
-      .eq('user_id', userId)
-      .select('user_id, email, memberapproved'); // return ข้อมูลกลับไปยืนยันนิดหน่อย
+      .eq('user_id', incomingId)
+      .select('user_id, email, memberapproved'); // ดึงเฉพาะคอลลัมน์ที่มีอยู่จริงชัวร์ๆ
 
-    if (error) throw error;
-    if (!data || data.length === 0) {
+    if (userError) throw userError;
+    
+    if (!userData || userData.length === 0) {
       return res.status(404).json({ error: 'ไม่พบผู้ใช้งานนี้ในระบบ' });
     }
 
-    res.json({ message: 'อนุมัติผู้ใช้งานสำเร็จ', user: data[0] });
+    // ดึง user_id ตัวจริงจากระบบออกมารับช่วงต่อ
+    const exactUserId = userData[0].user_id;
+
+    console.log(`🎯 อนุมัติยูสเซอร์สำเร็จ กำลังอัปเดตสลิปเงินของ user_id: ${exactUserId}`);
+
+    // 💡 2. อัปเดตตาราง payment เปลี่ยนสถานะสลิปของ user_id คนนี้ให้เป็น approved ทันที
+    const { data: checkPayment, error: paymentError } = await supabase
+      .from('payment')
+      .update({ 
+        status: 'approved',
+        approved_at: new Date().toISOString()
+      })
+      .eq('user_id', exactUserId) // จับคู่ยูสเซอร์ให้ตรงกับบิลเงินในตาราง payment
+      .eq('status', 'pending')    // ปรับเฉพาะบิลที่ยังไม่เคยอนุมัติ
+      .select();
+
+    if (paymentError) {
+      console.error('❌ Error ฝั่ง Payment:', paymentError.message);
+    } else {
+      console.log('📊 ยอดเงินคำนวณและปรับสถานะสำเร็จแล้ว!:', checkPayment);
+    }
+
+    res.json({ 
+      success: true,
+      message: 'อนุมัติผู้ใช้งานและปรับสถานะยอดเงินสำเร็จ ยอดเงินคำนวณแล้ว', 
+      user: userData[0] 
+    });
+
   } catch (err) {
+    console.error('❌ Approve Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -258,6 +284,7 @@ router.put('/admin/payment/:paymentId/approve', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 // ==========================================
 // Dashboard Statistics
 // GET /admin/dashboard
@@ -270,8 +297,8 @@ router.get('/admin/dashboard', async (req, res) => {
       jobsResult,
       memberPostResult,
       applicationResult,
+      approvedUsersResult, // เปลี่ยนมานับจำนวนผู้ใช้ที่อนุมัติแล้วเพื่อคิดเงิน
       pendingResult,
-      paymentResult,
       notificationResult
     ] = await Promise.all([
       supabase
@@ -294,14 +321,16 @@ router.get('/admin/dashboard', async (req, res) => {
         .from('application')
         .select('app_id', { count: 'exact', head: true }),
 
+      // 💡 ดึงจำนวนผู้ใช้งานที่ถูก "อนุมัติสิทธิ์แล้ว" (memberapproved: true)
+      supabase
+        .from('users')
+        .select('user_id', { count: 'exact', head: true })
+        .eq('memberapproved', true),
+
       supabase
         .from('users')
         .select('user_id', { count: 'exact', head: true })
         .eq('memberapproved', false),
-
-      supabase
-        .from('payment')
-        .select('payment_id, amount, status'),
 
       supabase
         .from('notification')
@@ -313,36 +342,33 @@ router.get('/admin/dashboard', async (req, res) => {
     if (jobsResult.error) throw jobsResult.error;
     if (memberPostResult.error) throw memberPostResult.error;
     if (applicationResult.error) throw applicationResult.error;
+    if (approvedUsersResult.error) throw approvedUsersResult.error;
     if (pendingResult.error) throw pendingResult.error;
-    if (paymentResult.error) throw paymentResult.error;
     if (notificationResult.error) throw notificationResult.error;
 
-    const payments = paymentResult.data || [];
+    // 🎯 คำนวณยอดเงินรวม (Total Revenue) จากจำนวนคนที่อนุมัติแล้ว
+    // สมมติค่าสมัคร/ค่าบริการ หัวละ 50 บาท (คุณสามารถเปลี่ยนเลข 50 เป็นยอดเงินจริงของคุณได้เลยครับ)
+    const pricePerUser = 50; 
+    const approvedCount = approvedUsersResult.count || 0;
+    const totalRevenue = approvedCount * pricePerUser;
 
-    const totalRevenue = payments
-      .filter((p) => p.status === 'approved')
-      .reduce((sum, p) => {
-        return sum + Number(p.amount || 0);
-      }, 0);
-
+    // ส่งข้อมูลทั้งหมดกลับไปที่แอป Flutter
     res.json({
       success: true,
-
       total_users: usersResult.count || 0,
       total_companies: companyResult.count || 0,
       total_jobs: jobsResult.count || 0,
       total_member_posts: memberPostResult.count || 0,
       total_applications: applicationResult.count || 0,
-
       pending_users: pendingResult.count || 0,
       total_notifications: notificationResult.count || 0,
-
-      total_revenue: totalRevenue,
+      
+      // ยอดเงินรวมจะแปรผันตามจำนวนคนที่กดอนุมัติทันที
+      total_revenue: totalRevenue, 
     });
 
   } catch (err) {
-    console.error('Dashboard Error:', err);
-
+    console.error('❌ Dashboard Error:', err);
     res.status(500).json({
       success: false,
       error: err.message
